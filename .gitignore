@@ -28,3 +28,20 @@ Thumbs.db
 dist/
 build/
 out/
+
+# Local notes and one-off reports
+FINAL_CHECKLIST.sh
+FIX_GUIDE.md
+README_FINAL_SOLUTION.md
+RUN_TESTS.sh
+SETUP_SUMMARY.md
+SOLUTION_ROOT_CAUSE.md
+Testcase_Stripe.md
+playwright_test_report.md
+test-report-clean.json
+test-report-list.txt
+test-report.json
+ui_screenshot.png
+debug-jobs.js
+parse_report.py
+update_imports.py
