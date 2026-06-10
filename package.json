@@ -1,0 +1,23 @@
+{
+  "name": "uctalents-playwright-e2e",
+  "version": "1.0.0",
+  "description": "Playwright E2E tests for UCTalent",
+  "scripts": {
+    "test": "playwright test",
+    "test:ui": "playwright test --ui",
+    "test:headed": "playwright test --headed",
+    "test:nightly": "CI_AUTH_MODE=reuse playwright test --reporter=list,html",
+    "auth:refresh": "CI_AUTH_MODE=refresh playwright test --project=chromium --grep \"TC 1\" --reporter=line",
+    "login": "node login.setup.js",
+    "login:headed": "playwright test --headed --grep \"Admin Portal|ATS & Candidate Management\" --project=chromium --reporter=line",
+    "test:interactive": "playwright test --headed --project=chromium --reporter=line",
+    "diagnose": "node diagnose.js",
+    "fix": "bash quick-fix.sh"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.60.0",
+    "@types/node": "^20.0.0",
+    "dotenv": "^17.4.2",
+    "typescript": "^5.0.0"
+  }
+}
