@@ -45,3 +45,8 @@ ui_screenshot.png
 debug-jobs.js
 parse_report.py
 update_imports.py
+cloudbuild.yaml
+diagnose.js
+login.setup.js
+quick-fix.sh
+setup.sh

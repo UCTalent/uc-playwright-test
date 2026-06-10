@@ -8,11 +8,7 @@
     "test:headed": "playwright test --headed",
     "test:nightly": "CI_AUTH_MODE=reuse playwright test --reporter=list,html",
     "auth:refresh": "CI_AUTH_MODE=refresh playwright test --project=chromium --grep \"TC 1\" --reporter=line",
-    "login": "node login.setup.js",
-    "login:headed": "playwright test --headed --grep \"Admin Portal|ATS & Candidate Management\" --project=chromium --reporter=line",
-    "test:interactive": "playwright test --headed --project=chromium --reporter=line",
-    "diagnose": "node diagnose.js",
-    "fix": "bash quick-fix.sh"
+    "test:interactive": "playwright test --headed --project=chromium --reporter=line"
   },
   "devDependencies": {
     "@playwright/test": "^1.60.0",
