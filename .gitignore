@@ -50,3 +50,7 @@ diagnose.js
 login.setup.js
 quick-fix.sh
 setup.sh
+
+# Agent tooling directories
+.agents/
+
