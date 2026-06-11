@@ -67,11 +67,11 @@ steps:
         VM_USERNAME_ESC=$(printf '%s' "$_VM_USERNAME" | sed "s/'/'\\\\''/g")
 
         echo "=== Creating directories on VPS ==="
-        ssh -i /root/.ssh/id_rsa -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o Port="$$SSH_PORT" "$_VM_USERNAME@$_VM_HOST" "DEPLOY_DIR='$$DEPLOY_DIR_ESC' LOG_DIR='$$LOG_DIR_ESC' REPORT_DIR='$$REPORT_DIR_ESC' VM_USERNAME='$$VM_USERNAME_ESC' bash -s" << '        EOF'
+        ssh -i /root/.ssh/id_rsa -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o Port="$$SSH_PORT" "$_VM_USERNAME@$_VM_HOST" "DEPLOY_DIR='$$DEPLOY_DIR_ESC' LOG_DIR='$$LOG_DIR_ESC' REPORT_DIR='$$REPORT_DIR_ESC' VM_USERNAME='$$VM_USERNAME_ESC' ;"'
         set -e
         sudo mkdir -p "$$DEPLOY_DIR" "$$LOG_DIR" "$$REPORT_DIR"
         sudo chown -R "$$VM_USERNAME:$$VM_USERNAME" "$$DEPLOY_DIR" "$$LOG_DIR" "$$REPORT_DIR"
-        EOF
+        '
 
         echo "=== Generating local .env template ==="
         cat << '        EOF' | sed 's/^        //' > .env.template
@@ -104,22 +104,22 @@ steps:
         rm -f .env.template
 
         echo "=== Installing dependencies on VPS ==="
-        ssh -i /root/.ssh/id_rsa -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o Port="$$SSH_PORT" "$_VM_USERNAME@$_VM_HOST" "DEPLOY_DIR='$$DEPLOY_DIR_ESC' bash -s" << '        EOF'
+        ssh -i /root/.ssh/id_rsa -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o Port="$$SSH_PORT" "$_VM_USERNAME@$_VM_HOST" "DEPLOY_DIR='$$DEPLOY_DIR_ESC' ;"'
         set -e
         cd "$$DEPLOY_DIR"
 
         # Ensure Node.js >= 18 is present and compatible
         NODE_OK=0
         if command -v node > /dev/null 2>&1; then
-          NODE_VERSION=$(node -v | cut -d'v' -f2)
-          NODE_MAJOR=$(echo "$$NODE_VERSION" | cut -d'.' -f1)
+          NODE_VERSION=$$(node -v | cut -dv -f2)
+          NODE_MAJOR=$$(echo "$$NODE_VERSION" | cut -d. -f1)
           if [ "$$NODE_MAJOR" -ge 18 ]; then
             NODE_OK=1
           fi
         fi
 
         if [ "$$NODE_OK" -eq 0 ]; then
-          echo 'Node.js not found or version is < 18. Installing Node 20 LTS...'
+          echo "Node.js not found or version is < 18. Installing Node 20 LTS..."
           sudo apt-get update && sudo apt-get install -y ca-certificates curl gnupg
           sudo mkdir -p /etc/apt/keyrings
           curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | sudo gpg --dearmor --yes -o /etc/apt/keyrings/nodesource.gpg
@@ -131,18 +131,18 @@ steps:
 
         # Install npm dependencies
         npm ci --prefer-offline
-        echo '✓ npm ci done'
+        echo "✓ npm ci done"
 
         # Install Playwright Chromium browser (let Playwright verify cache natively)
         npx playwright install chromium --with-deps
-        echo '✓ Playwright Chromium install/verify complete'
+        echo "✓ Playwright Chromium install/verify complete"
 
         # Ensure runner script is executable
         chmod +x "$$DEPLOY_DIR/scripts/run-nightly-tests.sh"
-        EOF
+        '
 
         echo "=== Writing .env on VPS ==="
-        ssh -i /root/.ssh/id_rsa -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o Port="$$SSH_PORT" "$_VM_USERNAME@$_VM_HOST" "DEPLOY_DIR='$$DEPLOY_DIR_ESC' bash -s" << '        EOF'
+        ssh -i /root/.ssh/id_rsa -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o Port="$$SSH_PORT" "$_VM_USERNAME@$_VM_HOST" "DEPLOY_DIR='$$DEPLOY_DIR_ESC' ;"'
         set -e
         touch "$$DEPLOY_DIR/.env"
         if [ -f "$$DEPLOY_DIR/.env.template" ]; then
@@ -156,20 +156,20 @@ steps:
             fi
           done < "$$DEPLOY_DIR/.env.template"
           rm -f "$$DEPLOY_DIR/.env.template"
-          echo '✓ .env merged and cleaned'
+          echo "✓ .env merged and cleaned"
         fi
-        EOF
+        '
 
         echo "=== Installing cron job on VPS ==="
-        ssh -i /root/.ssh/id_rsa -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o Port="$$SSH_PORT" "$_VM_USERNAME@$_VM_HOST" "DEPLOY_DIR='$$DEPLOY_DIR_ESC' LOG_DIR='$$LOG_DIR_ESC' REPORT_DIR='$$REPORT_DIR_ESC' CRON_MINUTE='$$CRON_MINUTE_ESC' CRON_HOUR='$$CRON_HOUR_ESC' bash -s" << '        EOF'
+        ssh -i /root/.ssh/id_rsa -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o Port="$$SSH_PORT" "$_VM_USERNAME@$_VM_HOST" "DEPLOY_DIR='$$DEPLOY_DIR_ESC' LOG_DIR='$$LOG_DIR_ESC' REPORT_DIR='$$REPORT_DIR_ESC' CRON_MINUTE='$$CRON_MINUTE_ESC' CRON_HOUR='$$CRON_HOUR_ESC' ;"'
         set -e
         CRON_ID="CRON_ID=uc-playwright-e2e-nightly"
         CRON_CMD="$$CRON_MINUTE $$CRON_HOUR * * * $$CRON_ID E2E_DIR=$$DEPLOY_DIR E2E_LOG_DIR=$$LOG_DIR E2E_REPORT_DIR=$$REPORT_DIR /usr/bin/env bash $$DEPLOY_DIR/scripts/run-nightly-tests.sh >> $$LOG_DIR/cron-wrapper.log 2>&1"
         
         (crontab -l 2>/dev/null | grep -v "$$CRON_ID" || true; echo "$$CRON_CMD") | crontab -
-        echo '✓ Cron registered:'
+        echo "✓ Cron registered:"
         crontab -l | grep "$$CRON_ID"
-        EOF
+        '
 
         echo ""
         echo "========================================================"
