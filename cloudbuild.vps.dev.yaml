@@ -16,6 +16,8 @@ steps:
         echo "✓ package-lock.json"
         [ -f "playwright.config.ts" ] || { echo "ERROR: playwright.config.ts is missing!"; exit 1; }
         echo "✓ playwright.config.ts"
+        [ -f "Dockerfile" ]           || { echo "ERROR: Dockerfile is missing!"; exit 1; }
+        echo "✓ Dockerfile"
         [ -f "scripts/run-nightly-tests.sh" ] || { echo "ERROR: scripts/run-nightly-tests.sh is missing!"; exit 1; }
         echo "✓ run-nightly-tests.sh"
         echo "=== Source OK ==="
@@ -109,8 +111,6 @@ steps:
           printf 'BASE_URL=%s\n' "$_FRONTEND_URL"
           printf 'ATS_URL=%s\n' "$_ATS_URL"
           printf 'API_BASE_URL=%s\n' "$_API_URL"
-          printf 'E2E_LOG_DIR=%s\n' "$_LOG_DIR"
-          printf 'E2E_REPORT_DIR=%s\n' "$_REPORT_DIR"
         } > .env.template
 
         echo "=== Syncing source code to VPS ==="
@@ -131,9 +131,9 @@ steps:
     secretEnv: ['VM_SSH_KEY', 'SSH_PORT']
 
   # ---------------------------------------------------------------------------
-  # Step 4: Install dependencies and browser on VPS
+  # Step 4: Install Docker on VPS if needed and build the test image
   # ---------------------------------------------------------------------------
-  - id: 'install-deps'
+  - id: 'build-docker-image'
     name: 'gcr.io/google.com/cloudsdktool/cloud-sdk:alpine'
     entrypoint: 'sh'
     args:
@@ -149,42 +149,29 @@ steps:
 
         DEPLOY_DIR="$_DEPLOY_DIR"
         DEPLOY_DIR_ESC=$(printf '%s' "$$DEPLOY_DIR" | sed "s/'/'\\\\''/g")
+        DOCKER_IMAGE_ESC=$(printf '%s' "$_DOCKER_IMAGE" | sed "s/'/'\\\\''/g")
 
-        echo "=== Installing dependencies on VPS ==="
+        echo "=== Installing Docker and building image on VPS ==="
         {
           printf '%s\n' 'set -eu'
           printf "DEPLOY_DIR='%s'\n" "$$DEPLOY_DIR_ESC"
+          printf "DOCKER_IMAGE='%s'\n" "$$DOCKER_IMAGE_ESC"
+          printf '%s\n' 'if ! command -v docker >/dev/null 2>&1; then'
+          printf '%s\n' '  echo "Docker not found. Installing docker.io..."'
+          printf '%s\n' '  sudo apt-get update'
+          printf '%s\n' '  sudo DEBIAN_FRONTEND=noninteractive apt-get install -y docker.io coreutils'
+          printf '%s\n' 'fi'
+          printf '%s\n' 'if ! command -v timeout >/dev/null 2>&1; then'
+          printf '%s\n' '  sudo apt-get update'
+          printf '%s\n' '  sudo DEBIAN_FRONTEND=noninteractive apt-get install -y coreutils'
+          printf '%s\n' 'fi'
+          printf '%s\n' 'sudo systemctl enable --now docker'
+          printf '%s\n' 'sudo docker version >/dev/null'
           printf '%s\n' 'cd "$$DEPLOY_DIR"'
-          printf '%s\n' 'NODE_OK=0'
-          printf '%s\n' 'if command -v node >/dev/null 2>&1; then'
-          printf '%s\n' '  NODE_VERSION=$$(node -v | cut -dv -f2)'
-          printf '%s\n' '  NODE_MAJOR=$$(echo "$$NODE_VERSION" | cut -d. -f1)'
-          printf '%s\n' '  if [ "$$NODE_MAJOR" -ge 18 ]; then'
-          printf '%s\n' '    NODE_OK=1'
-          printf '%s\n' '  fi'
-          printf '%s\n' 'fi'
-          printf '%s\n' 'if [ "$$NODE_OK" -eq 0 ]; then'
-          printf '%s\n' '  echo "Node.js not found or version is < 18. Installing Node 20 LTS..."'
-          printf '%s\n' '  sudo apt-get update'
-          printf '%s\n' '  sudo apt-get install -y ca-certificates curl gnupg'
-          printf '%s\n' '  sudo mkdir -p /etc/apt/keyrings'
-          printf '%s\n' '  curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | sudo gpg --dearmor --yes -o /etc/apt/keyrings/nodesource.gpg'
-          printf '%s\n' '  echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_20.x nodistro main" | sudo tee /etc/apt/sources.list.d/nodesource.list >/dev/null'
-          printf '%s\n' '  sudo apt-get update'
-          printf '%s\n' '  sudo DEBIAN_FRONTEND=noninteractive apt-get install -y nodejs'
-          printf '%s\n' 'fi'
-          printf '%s\n' 'if ! command -v flock >/dev/null 2>&1 || ! command -v timeout >/dev/null 2>&1; then'
-          printf '%s\n' '  sudo apt-get update'
-          printf '%s\n' '  sudo apt-get install -y util-linux coreutils'
-          printf '%s\n' 'fi'
-          printf '%s\n' 'echo "Node: $$(node -v)"'
-          printf '%s\n' 'npm ci --prefer-offline'
-          printf '%s\n' 'echo "✓ npm ci done"'
-          printf '%s\n' 'npx playwright install chromium --with-deps'
-          printf '%s\n' 'echo "✓ Playwright Chromium install/verify complete"'
-          printf '%s\n' 'chmod +x "$$DEPLOY_DIR/scripts/run-nightly-tests.sh"'
+          printf '%s\n' 'sudo docker build -t "$$DOCKER_IMAGE" .'
+          printf '%s\n' 'echo "✓ Docker image built: $$DOCKER_IMAGE"'
         } | ssh -i /root/.ssh/id_rsa -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o Port="$$SSH_PORT" "$_VM_USERNAME@$_VM_HOST" 'bash -se'
-        echo "✓ VPS dependency install complete"
+        echo "✓ VPS Docker image build complete"
     secretEnv: ['VM_SSH_KEY', 'SSH_PORT']
 
   # ---------------------------------------------------------------------------
@@ -233,7 +220,103 @@ steps:
     secretEnv: ['VM_SSH_KEY', 'SSH_PORT']
 
   # ---------------------------------------------------------------------------
-  # Step 6: Install the nightly cron entry on VPS
+  # Step 6: Write the Docker runner wrapper on VPS
+  # ---------------------------------------------------------------------------
+  - id: 'write-docker-runner'
+    name: 'gcr.io/google.com/cloudsdktool/cloud-sdk:alpine'
+    entrypoint: 'sh'
+    args:
+      - '-c'
+      - |
+        set -eu
+        apk add --no-cache openssh-client >/dev/null
+
+        mkdir -p /root/.ssh
+        chmod 700 /root/.ssh
+        printenv VM_SSH_KEY | sed 's/\\n/\n/g' | tr -d '\r' > /root/.ssh/id_rsa
+        chmod 600 /root/.ssh/id_rsa
+
+        DEPLOY_DIR_ESC=$(printf '%s' "$_DEPLOY_DIR" | sed "s/'/'\\\\''/g")
+        LOG_DIR_ESC=$(printf '%s' "$_LOG_DIR" | sed "s/'/'\\\\''/g")
+        REPORT_DIR_ESC=$(printf '%s' "$_REPORT_DIR" | sed "s/'/'\\\\''/g")
+        INSTANCE_NAME_ESC=$(printf '%s' "$_INSTANCE_NAME" | sed "s/'/'\\\\''/g")
+        DOCKER_IMAGE_ESC=$(printf '%s' "$_DOCKER_IMAGE" | sed "s/'/'\\\\''/g")
+        RUN_TIMEOUT_SECONDS_ESC=$(printf '%s' "$_RUN_TIMEOUT_SECONDS" | sed "s/'/'\\\\''/g")
+
+        echo "=== Writing Docker runner on VPS ==="
+        {
+          printf '%s\n' 'set -eu'
+          printf "DEPLOY_DIR='%s'\n" "$$DEPLOY_DIR_ESC"
+          printf "LOG_DIR='%s'\n" "$$LOG_DIR_ESC"
+          printf "REPORT_DIR='%s'\n" "$$REPORT_DIR_ESC"
+          printf "INSTANCE_NAME='%s'\n" "$$INSTANCE_NAME_ESC"
+          printf "DOCKER_IMAGE='%s'\n" "$$DOCKER_IMAGE_ESC"
+          printf "RUN_TIMEOUT_SECONDS='%s'\n" "$$RUN_TIMEOUT_SECONDS_ESC"
+          printf '%s\n' 'cat > "$$DEPLOY_DIR/run-in-docker.sh" <<EOF'
+          printf '%s\n' '#!/usr/bin/env bash'
+          printf '%s\n' 'set -euo pipefail'
+          printf '%s\n' ''
+          printf '%s\n' "DEPLOY_DIR='$$DEPLOY_DIR'"
+          printf '%s\n' "LOG_DIR='$$LOG_DIR'"
+          printf '%s\n' "REPORT_DIR='$$REPORT_DIR'"
+          printf '%s\n' "INSTANCE_NAME='$$INSTANCE_NAME'"
+          printf '%s\n' "DOCKER_IMAGE='$$DOCKER_IMAGE'"
+          printf '%s\n' "RUN_TIMEOUT_SECONDS='$$RUN_TIMEOUT_SECONDS'"
+          printf '%s\n' 'CONTAINER_NAME="$$INSTANCE_NAME-nightly"'
+          printf '%s\n' 'CONTAINER_LOG_DIR="/artifacts/logs"'
+          printf '%s\n' 'CONTAINER_REPORT_DIR="/artifacts/reports"'
+          printf '%s\n' ''
+          printf '%s\n' 'if [ ! -f "$$DEPLOY_DIR/storageState.json" ]; then'
+          printf '%s\n' '  echo "ERROR: $$DEPLOY_DIR/storageState.json is missing."'
+          printf '%s\n' '  echo "Upload it before running the containerized nightly job."'
+          printf '%s\n' '  exit 3'
+          printf '%s\n' 'fi'
+          printf '%s\n' ''
+          printf '%s\n' 'DOCKER=(sudo docker)'
+          printf '%s\n' 'if [ "$${EUID:-$$(id -u)}" -eq 0 ]; then'
+          printf '%s\n' '  DOCKER=(docker)'
+          printf '%s\n' 'fi'
+          printf '%s\n' ''
+          printf '%s\n' 'if "$${DOCKER[@]}" ps --format "{{.Names}}" | grep -Fx "$$CONTAINER_NAME" >/dev/null 2>&1; then'
+          printf '%s\n' '  echo "INFO: $$CONTAINER_NAME is already running. Skipping overlapping run."'
+          printf '%s\n' '  exit 4'
+          printf '%s\n' 'fi'
+          printf '%s\n' ''
+          printf '%s\n' 'RUN_CMD=('
+          printf '%s\n' '  "$${DOCKER[@]}"'
+          printf '%s\n' '  run'
+          printf '%s\n' '  --rm'
+          printf '%s\n' '  --name "$$CONTAINER_NAME"'
+          printf '%s\n' '  --env-file "$$DEPLOY_DIR/.env"'
+          printf '%s\n' '  -e E2E_LOG_DIR="$$CONTAINER_LOG_DIR"'
+          printf '%s\n' '  -e E2E_REPORT_DIR="$$CONTAINER_REPORT_DIR"'
+          printf '%s\n' '  -v "$$DEPLOY_DIR/storageState.json:/app/storageState.json:ro"'
+          printf '%s\n' '  -v "$$LOG_DIR:$$CONTAINER_LOG_DIR"'
+          printf '%s\n' '  -v "$$REPORT_DIR:$$CONTAINER_REPORT_DIR"'
+          printf '%s\n' '  "$$DOCKER_IMAGE"'
+          printf '%s\n' '  bash scripts/run-nightly-tests.sh'
+          printf '%s\n' ')'
+          printf '%s\n' ''
+          printf '%s\n' 'if command -v timeout >/dev/null 2>&1; then'
+          printf '%s\n' '  set +e'
+          printf '%s\n' '  timeout --foreground "$${RUN_TIMEOUT_SECONDS}s" "$${RUN_CMD[@]}"'
+          printf '%s\n' '  STATUS=$$?'
+          printf '%s\n' '  set -e'
+          printf '%s\n' '  if [ "$$STATUS" -eq 124 ]; then'
+          printf '%s\n' '    "$${DOCKER[@]}" rm -f "$$CONTAINER_NAME" >/dev/null 2>&1 || true'
+          printf '%s\n' '  fi'
+          printf '%s\n' '  exit "$$STATUS"'
+          printf '%s\n' 'fi'
+          printf '%s\n' ''
+          printf '%s\n' 'exec "$${RUN_CMD[@]}"'
+          printf '%s\n' 'EOF'
+          printf '%s\n' 'chmod +x "$$DEPLOY_DIR/run-in-docker.sh"'
+          printf '%s\n' 'echo "✓ Docker runner ready: $$DEPLOY_DIR/run-in-docker.sh"'
+        } | ssh -i /root/.ssh/id_rsa -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o Port="$$SSH_PORT" "$_VM_USERNAME@$_VM_HOST" 'bash -se'
+    secretEnv: ['VM_SSH_KEY', 'SSH_PORT']
+
+  # ---------------------------------------------------------------------------
+  # Step 7: Install the nightly cron entry on VPS
   # ---------------------------------------------------------------------------
   - id: 'install-cron'
     name: 'gcr.io/google.com/cloudsdktool/cloud-sdk:alpine'
@@ -251,7 +334,7 @@ steps:
 
         DEPLOY_DIR_ESC=$(printf '%s' "$_DEPLOY_DIR" | sed "s/'/'\\\\''/g")
         LOG_DIR_ESC=$(printf '%s' "$_LOG_DIR" | sed "s/'/'\\\\''/g")
-        REPORT_DIR_ESC=$(printf '%s' "$_REPORT_DIR" | sed "s/'/'\\\\''/g")
+        INSTANCE_NAME_ESC=$(printf '%s' "$_INSTANCE_NAME" | sed "s/'/'\\\\''/g")
         CRON_MINUTE_ESC=$(printf '%s' "$_CRON_MINUTE" | sed "s/'/'\\\\''/g")
         CRON_HOUR_ESC=$(printf '%s' "$_CRON_HOUR" | sed "s/'/'\\\\''/g")
 
@@ -260,25 +343,25 @@ steps:
           printf '%s\n' 'set -eu'
           printf "DEPLOY_DIR='%s'\n" "$$DEPLOY_DIR_ESC"
           printf "LOG_DIR='%s'\n" "$$LOG_DIR_ESC"
-          printf "REPORT_DIR='%s'\n" "$$REPORT_DIR_ESC"
+          printf "INSTANCE_NAME='%s'\n" "$$INSTANCE_NAME_ESC"
           printf "CRON_MINUTE='%s'\n" "$$CRON_MINUTE_ESC"
           printf "CRON_HOUR='%s'\n" "$$CRON_HOUR_ESC"
-          printf '%s\n' 'CRON_ID="CRON_ID=uc-playwright-e2e-nightly"'
-          printf '%s\n' 'CRON_CMD="$$CRON_MINUTE $$CRON_HOUR * * * $$CRON_ID E2E_DIR=$$DEPLOY_DIR E2E_LOG_DIR=$$LOG_DIR E2E_REPORT_DIR=$$REPORT_DIR /usr/bin/env bash $$DEPLOY_DIR/scripts/run-nightly-tests.sh >> $$LOG_DIR/cron-wrapper.log 2>&1"'
-          printf '%s\n' '(crontab -l 2>/dev/null | grep -v "$$CRON_ID" || true; echo "$$CRON_CMD") | crontab -'
+          printf '%s\n' 'CRON_ID="CRON_ID=$$INSTANCE_NAME-nightly"'
+          printf '%s\n' 'CRON_CMD="$$CRON_MINUTE $$CRON_HOUR * * * $$CRON_ID /usr/bin/env bash $$DEPLOY_DIR/run-in-docker.sh >> $$LOG_DIR/cron-wrapper.log 2>&1"'
+          printf '%s\n' '(sudo crontab -l 2>/dev/null | grep -v "$$CRON_ID" || true; echo "$$CRON_CMD") | sudo crontab -'
           printf '%s\n' 'echo "✓ Cron registered:"'
-          printf '%s\n' 'crontab -l | grep "$$CRON_ID"'
+          printf '%s\n' 'sudo crontab -l | grep "$$CRON_ID"'
         } | ssh -i /root/.ssh/id_rsa -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o Port="$$SSH_PORT" "$_VM_USERNAME@$_VM_HOST" 'bash -se'
 
         echo ""
         echo "========================================================"
-        echo "✅ E2E deploy complete!"
+        echo "✅ E2E container deploy complete!"
         echo ""
         echo "⚠️  ACTION REQUIRED: Upload storageState.json to VPS"
         echo "   scp storageState.json $_VM_USERNAME@$_VM_HOST:$_DEPLOY_DIR/storageState.json"
         echo ""
         echo "Smoke test:"
-        echo "   ssh $_VM_USERNAME@$_VM_HOST 'E2E_DIR=$_DEPLOY_DIR bash $_DEPLOY_DIR/scripts/run-nightly-tests.sh'"
+        echo "   ssh $_VM_USERNAME@$_VM_HOST 'bash $_DEPLOY_DIR/run-in-docker.sh'"
         echo "========================================================"
     secretEnv: ['VM_SSH_KEY', 'SSH_PORT']
 
@@ -292,6 +375,9 @@ availableSecrets:
 substitutions:
   _VM_HOST: '14.225.210.119'
   _VM_USERNAME: 'alphaforce'
+  _INSTANCE_NAME: 'uc-playwright-dev'
+  _DOCKER_IMAGE: 'uc-playwright-e2e:dev'
+  _RUN_TIMEOUT_SECONDS: '7200'
 
   # --- E2E deploy paths on VPS ---
   _DEPLOY_DIR: '/opt/uctalents/playwright-tests'
