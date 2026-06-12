@@ -69,8 +69,8 @@ steps:
           printf "LOG_DIR='%s'\n" "$$LOG_DIR_ESC"
           printf "REPORT_DIR='%s'\n" "$$REPORT_DIR_ESC"
           printf "VM_USERNAME='%s'\n" "$$VM_USERNAME_ESC"
-          printf '%s\n' 'sudo mkdir -p "$DEPLOY_DIR" "$LOG_DIR" "$REPORT_DIR"'
-          printf '%s\n' 'sudo chown -R "$VM_USERNAME:$VM_USERNAME" "$DEPLOY_DIR" "$LOG_DIR" "$REPORT_DIR"'
+          printf '%s\n' 'sudo mkdir -p "$$DEPLOY_DIR" "$$LOG_DIR" "$$REPORT_DIR"'
+          printf '%s\n' 'sudo chown -R "$$VM_USERNAME:$$VM_USERNAME" "$$DEPLOY_DIR" "$$LOG_DIR" "$$REPORT_DIR"'
         } | ssh -i /root/.ssh/id_rsa -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o Port="$$SSH_PORT" "$_VM_USERNAME@$_VM_HOST" 'bash -se'
         echo "✓ VPS directories ready"
     secretEnv: ['VM_SSH_KEY', 'SSH_PORT']
@@ -154,16 +154,16 @@ steps:
         {
           printf '%s\n' 'set -eu'
           printf "DEPLOY_DIR='%s'\n" "$$DEPLOY_DIR_ESC"
-          printf '%s\n' 'cd "$DEPLOY_DIR"'
+          printf '%s\n' 'cd "$$DEPLOY_DIR"'
           printf '%s\n' 'NODE_OK=0'
           printf '%s\n' 'if command -v node >/dev/null 2>&1; then'
-          printf '%s\n' '  NODE_VERSION=$(node -v | cut -dv -f2)'
-          printf '%s\n' '  NODE_MAJOR=$(echo "$NODE_VERSION" | cut -d. -f1)'
-          printf '%s\n' '  if [ "$NODE_MAJOR" -ge 18 ]; then'
+          printf '%s\n' '  NODE_VERSION=$$(node -v | cut -dv -f2)'
+          printf '%s\n' '  NODE_MAJOR=$$(echo "$$NODE_VERSION" | cut -d. -f1)'
+          printf '%s\n' '  if [ "$$NODE_MAJOR" -ge 18 ]; then'
           printf '%s\n' '    NODE_OK=1'
           printf '%s\n' '  fi'
           printf '%s\n' 'fi'
-          printf '%s\n' 'if [ "$NODE_OK" -eq 0 ]; then'
+          printf '%s\n' 'if [ "$$NODE_OK" -eq 0 ]; then'
           printf '%s\n' '  echo "Node.js not found or version is < 18. Installing Node 20 LTS..."'
           printf '%s\n' '  sudo apt-get update'
           printf '%s\n' '  sudo apt-get install -y ca-certificates curl gnupg'
@@ -173,12 +173,16 @@ steps:
           printf '%s\n' '  sudo apt-get update'
           printf '%s\n' '  sudo DEBIAN_FRONTEND=noninteractive apt-get install -y nodejs'
           printf '%s\n' 'fi'
-          printf '%s\n' 'echo "Node: $(node -v)"'
+          printf '%s\n' 'if ! command -v flock >/dev/null 2>&1 || ! command -v timeout >/dev/null 2>&1; then'
+          printf '%s\n' '  sudo apt-get update'
+          printf '%s\n' '  sudo apt-get install -y util-linux coreutils'
+          printf '%s\n' 'fi'
+          printf '%s\n' 'echo "Node: $$(node -v)"'
           printf '%s\n' 'npm ci --prefer-offline'
           printf '%s\n' 'echo "✓ npm ci done"'
           printf '%s\n' 'npx playwright install chromium --with-deps'
           printf '%s\n' 'echo "✓ Playwright Chromium install/verify complete"'
-          printf '%s\n' 'chmod +x "$DEPLOY_DIR/scripts/run-nightly-tests.sh"'
+          printf '%s\n' 'chmod +x "$$DEPLOY_DIR/scripts/run-nightly-tests.sh"'
         } | ssh -i /root/.ssh/id_rsa -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o Port="$$SSH_PORT" "$_VM_USERNAME@$_VM_HOST" 'bash -se'
         echo "✓ VPS dependency install complete"
     secretEnv: ['VM_SSH_KEY', 'SSH_PORT']
@@ -207,23 +211,23 @@ steps:
         {
           printf '%s\n' 'set -eu'
           printf "DEPLOY_DIR='%s'\n" "$$DEPLOY_DIR_ESC"
-          printf '%s\n' 'touch "$DEPLOY_DIR/.env"'
-          printf '%s\n' 'if [ ! -f "$DEPLOY_DIR/.env.template" ]; then'
-          printf '%s\n' '  echo "ERROR: $DEPLOY_DIR/.env.template not found on VPS"'
+          printf '%s\n' 'touch "$$DEPLOY_DIR/.env"'
+          printf '%s\n' 'if [ ! -f "$$DEPLOY_DIR/.env.template" ]; then'
+          printf '%s\n' '  echo "ERROR: $$DEPLOY_DIR/.env.template not found on VPS"'
           printf '%s\n' '  exit 1'
           printf '%s\n' 'fi'
-          printf '%s\n' 'while IFS= read -r line || [ -n "$line" ]; do'
-          printf '%s\n' '  case "$line" in'
+          printf '%s\n' 'while IFS= read -r line || [ -n "$$line" ]; do'
+          printf '%s\n' '  case "$$line" in'
           printf '%s\n' "    ''|\\#*) continue ;;"
           printf '%s\n' '  esac'
-          printf '%s\n' '  key=${line%%=*}'
-          printf '%s\n' '  val=${line#*=}'
-          printf '%s\n' '  if ! grep -q "^${key}=" "$DEPLOY_DIR/.env"; then'
-          printf '%s\n' '    printf "%s=%s\n" "$key" "$val" >> "$DEPLOY_DIR/.env"'
-          printf '%s\n' '    echo "  Added missing env: $key"'
+          printf '%s\n' '  key=$${line%%=*}'
+          printf '%s\n' '  val=$${line#*=}'
+          printf '%s\n' '  if ! grep -q "^$${key}=" "$$DEPLOY_DIR/.env"; then'
+          printf '%s\n' '    printf "%s=%s\n" "$$key" "$$val" >> "$$DEPLOY_DIR/.env"'
+          printf '%s\n' '    echo "  Added missing env: $$key"'
           printf '%s\n' '  fi'
-          printf '%s\n' 'done < "$DEPLOY_DIR/.env.template"'
-          printf '%s\n' 'rm -f "$DEPLOY_DIR/.env.template"'
+          printf '%s\n' 'done < "$$DEPLOY_DIR/.env.template"'
+          printf '%s\n' 'rm -f "$$DEPLOY_DIR/.env.template"'
           printf '%s\n' 'echo "✓ .env merged and cleaned"'
         } | ssh -i /root/.ssh/id_rsa -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o Port="$$SSH_PORT" "$_VM_USERNAME@$_VM_HOST" 'bash -se'
     secretEnv: ['VM_SSH_KEY', 'SSH_PORT']
@@ -260,10 +264,10 @@ steps:
           printf "CRON_MINUTE='%s'\n" "$$CRON_MINUTE_ESC"
           printf "CRON_HOUR='%s'\n" "$$CRON_HOUR_ESC"
           printf '%s\n' 'CRON_ID="CRON_ID=uc-playwright-e2e-nightly"'
-          printf '%s\n' 'CRON_CMD="$CRON_MINUTE $CRON_HOUR * * * $CRON_ID E2E_DIR=$DEPLOY_DIR E2E_LOG_DIR=$LOG_DIR E2E_REPORT_DIR=$REPORT_DIR /usr/bin/env bash $DEPLOY_DIR/scripts/run-nightly-tests.sh >> $LOG_DIR/cron-wrapper.log 2>&1"'
-          printf '%s\n' '(crontab -l 2>/dev/null | grep -v "$CRON_ID" || true; echo "$CRON_CMD") | crontab -'
+          printf '%s\n' 'CRON_CMD="$$CRON_MINUTE $$CRON_HOUR * * * $$CRON_ID E2E_DIR=$$DEPLOY_DIR E2E_LOG_DIR=$$LOG_DIR E2E_REPORT_DIR=$$REPORT_DIR /usr/bin/env bash $$DEPLOY_DIR/scripts/run-nightly-tests.sh >> $$LOG_DIR/cron-wrapper.log 2>&1"'
+          printf '%s\n' '(crontab -l 2>/dev/null | grep -v "$$CRON_ID" || true; echo "$$CRON_CMD") | crontab -'
           printf '%s\n' 'echo "✓ Cron registered:"'
-          printf '%s\n' 'crontab -l | grep "$CRON_ID"'
+          printf '%s\n' 'crontab -l | grep "$$CRON_ID"'
         } | ssh -i /root/.ssh/id_rsa -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o Port="$$SSH_PORT" "$_VM_USERNAME@$_VM_HOST" 'bash -se'
 
         echo ""
@@ -294,8 +298,8 @@ substitutions:
   _LOG_DIR: '/opt/uctalents/playwright-logs'
   _REPORT_DIR: '/opt/uctalents/playwright-reports'
 
-  # --- Cron schedule (UTC) — default 19:00 UTC = 02:00 ICT ---
-  _CRON_HOUR: '19'
+  # --- Cron schedule in the VPS local timezone ---
+  _CRON_HOUR: '2'
   _CRON_MINUTE: '0'
 
   # --- Target URLs ---
