@@ -1,0 +1,10 @@
+.git
+.agents
+.codex
+node_modules
+playwright-report
+nightly-logs
+nightly-reports
+storageState.json
+.env
+.env.template

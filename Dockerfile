@@ -1,4 +1,4 @@
-FROM mcr.microsoft.com/playwright:v1.40.0-jammy
+FROM mcr.microsoft.com/playwright:v1.60.0-jammy
 
 WORKDIR /app
 
@@ -12,4 +12,4 @@ RUN npm ci
 COPY . .
 
 # Default command to run tests
-CMD ["npx", "playwright", "test"]
+CMD ["bash", "scripts/run-nightly-tests.sh"]
