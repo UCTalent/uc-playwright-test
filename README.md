@@ -6,11 +6,12 @@ This repository contains the Playwright end-to-end suite for UCTalent.
 
 Use these files for these jobs:
 
-- Backend deploy to VPS: `uc-talent-backend/cloudbuild.vps.dev.yaml`
-- Nightly Playwright execution on VPS: `playwright-tests/scripts/run-nightly-tests.sh`
+- Backend deploy to VPS: `uc-talent-backend/cloudbuild.vps.dev.yaml` in the backend repository
+- Playwright VPS sync + Docker image build + service container deploy: `cloudbuild.vps.dev.yaml` in this repository
+- Nightly Playwright execution on VPS: `scripts/run-nightly-tests.sh`
 - Playwright auth refresh: `npm run auth:refresh`
 
-Do not use `playwright-tests/cloudbuild.yaml` for the current VPS flow. The active deployment flow is driven by the backend Cloud Build config, which can also install the nightly cron job on the VPS.
+Do not use the old `playwright-tests/cloudbuild.yaml`. In the current flow, backend deployment stays in the backend repository, while this repository's `cloudbuild.vps.dev.yaml` syncs the Playwright suite to the VPS, builds a Docker image there, and recreates a long-running scheduler container on the VM.
 
 ## Architecture
 
@@ -24,8 +25,7 @@ The test suite does not need to boot every repository on the VPS.
 In practice, the VPS is used for:
 
 - running the backend dev deployment
-- storing `storageState.json`
-- running nightly Playwright jobs via cron
+- running a long-lived Playwright scheduler container
 
 ## Required URLs
 
@@ -50,7 +50,7 @@ cd playwright-tests
 TEST_GOOGLE_EMAIL=your-admin@example.com TEST_GOOGLE_PASSWORD='your-password' npm run auth:refresh
 ```
 
-This creates `storageState.json`. Nightly runs reuse that file and do not wait for manual verification.
+This creates `storageState.json`. Store the exact file contents in Secret Manager so Cloud Build can write it onto the VPS during deploy. Nightly runs reuse that file and do not wait for manual verification.
 
 ## VPS flow
 
@@ -60,42 +60,76 @@ This creates `storageState.json`. Nightly runs reuse that file and do not wait f
 gcloud builds submit --config uc-talent-backend/cloudbuild.vps.dev.yaml uc-talent-backend
 ```
 
-2. Put this repository on the VPS at:
+2. Sync this repository to the VPS, build the Docker image, and recreate the scheduler container with Cloud Build from this repository:
+
+```bash
+gcloud builds submit --config cloudbuild.vps.dev.yaml .
+```
+
+3. The default target directory on the VPS is:
 
 ```text
 /opt/uctalents/playwright-tests
 ```
 
-3. Install dependencies once on the VPS:
+4. Override substitutions per instance when you want multiple Playwright containers on one VM:
 
 ```bash
-cd /opt/uctalents/playwright-tests
-npm ci
-npx playwright install chromium
+gcloud builds submit --config cloudbuild.vps.dev.yaml \
+  --substitutions=_CONTAINER_NAME=uc-playwright-staging,_DOCKER_IMAGE=uc-playwright-e2e:staging,_DATA_VOLUME=uc-playwright-staging-data,_DEPLOY_DIR=/opt/uctalents/playwright-tests-staging,_STORAGE_STATE_SECRET_NAME=playwright-storage-state-staging,_CPU_LIMIT=1,_MEMORY_LIMIT=1536m,_FRONTEND_URL=https://staging.example.com,_ATS_URL=https://ats-staging.example.com,_API_URL=https://api-staging.example.com .
 ```
 
-4. Run a smoke test manually:
+5. Save the generated `storageState.json` into Secret Manager:
 
 ```bash
-CI_AUTH_MODE=reuse npm run test:nightly
+gcloud secrets create playwright-storage-state-dev --data-file=storageState.json
 ```
 
-5. Or use the VPS runner directly:
+If the secret already exists, add a new version instead:
 
 ```bash
-/opt/uctalents-e2e/run-nightly-tests.sh
+gcloud secrets versions add playwright-storage-state-dev --data-file=storageState.json
 ```
 
-## Nightly automation
+6. Make sure the Cloud Build service account used by the trigger has `roles/secretmanager.secretAccessor` on that secret.
 
-The cron installer lives in:
+7. Inspect the running service:
 
-- `uc-talent-backend/cloudbuild.vps.dev.yaml`
-
-Enable it by setting:
-
-```yaml
-_INSTALL_E2E_CRON: 'true'
+```bash
+ssh <vps-user>@<vps-ip> 'sudo docker ps'
+ssh <vps-user>@<vps-ip> 'sudo docker logs -f uc-playwright-dev'
+ssh <vps-user>@<vps-ip> 'sudo docker exec -it uc-playwright-dev bash'
 ```
 
-When enabled, Cloud Build will SSH into the VPS, install the runner, and create the nightly cron entry.
+## Scheduler Container
+
+The deploy creates one long-running container per instance. That container:
+
+- keeps running on the VM with `--restart unless-stopped`
+- waits until the configured schedule time
+- executes `scripts/run-nightly-tests.sh` from inside the container
+- stores `storageState.json`, logs, and reports inside its Docker-managed data volume
+
+The default runtime settings come from substitutions in:
+
+- `cloudbuild.vps.dev.yaml`
+
+Defaults:
+
+- `_CONTAINER_NAME=uc-playwright-dev`
+- `_DATA_VOLUME=uc-playwright-dev-data`
+- `_SCHEDULE_HOUR=2`
+- `_SCHEDULE_MINUTE=0`
+- `_TIMEZONE=Asia/Ho_Chi_Minh`
+- `_CPU_LIMIT=1.5`
+- `_MEMORY_LIMIT=2g`
+- `_SHM_SIZE=1g`
+- `_PIDS_LIMIT=512`
+- `_LOG_MAX_SIZE=20m`
+- `_LOG_MAX_FILE=5`
+
+Each instance is deployed as exactly one long-running container with its own name, volume, resource limits, and `docker logs` rotation policy. Override the limit substitutions per environment so one heavy run cannot starve the whole VPS.
+
+The build reads `storageState.json` from Secret Manager secret `${_STORAGE_STATE_SECRET_NAME}` and injects it into the running container.
+
+`TEST_GOOGLE_EMAIL` and `TEST_GOOGLE_PASSWORD` can also live in Secret Manager, but the current deploy does not use them because the scheduler container runs in `CI_AUTH_MODE=reuse`.

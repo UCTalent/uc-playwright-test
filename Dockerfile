@@ -11,5 +11,7 @@ RUN npm ci
 # Copy the rest of the source code
 COPY . .
 
-# Default command to run tests
-CMD ["bash", "scripts/run-nightly-tests.sh"]
+RUN chmod +x scripts/run-nightly-tests.sh scripts/container-service.sh
+
+# Default command runs the in-container scheduler service
+CMD ["bash", "scripts/container-service.sh"]

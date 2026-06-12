@@ -10,75 +10,24 @@ steps:
       - |
         set -eu
         echo "=== Pre-flight: Validating source ==="
-        [ -f "package.json" ]         || { echo "ERROR: package.json is missing!"; exit 1; }
+        [ -f "package.json" ] || { echo "ERROR: package.json is missing!"; exit 1; }
         echo "✓ package.json"
-        [ -f "package-lock.json" ]    || { echo "ERROR: package-lock.json is missing!"; exit 1; }
+        [ -f "package-lock.json" ] || { echo "ERROR: package-lock.json is missing!"; exit 1; }
         echo "✓ package-lock.json"
         [ -f "playwright.config.ts" ] || { echo "ERROR: playwright.config.ts is missing!"; exit 1; }
         echo "✓ playwright.config.ts"
-        [ -f "Dockerfile" ]           || { echo "ERROR: Dockerfile is missing!"; exit 1; }
+        [ -f "Dockerfile" ] || { echo "ERROR: Dockerfile is missing!"; exit 1; }
         echo "✓ Dockerfile"
+        [ -f "deploy/report-nginx.conf" ] || { echo "ERROR: deploy/report-nginx.conf is missing!"; exit 1; }
+        echo "✓ report-nginx.conf"
         [ -f "scripts/run-nightly-tests.sh" ] || { echo "ERROR: scripts/run-nightly-tests.sh is missing!"; exit 1; }
         echo "✓ run-nightly-tests.sh"
+        [ -f "scripts/container-service.sh" ] || { echo "ERROR: scripts/container-service.sh is missing!"; exit 1; }
+        echo "✓ container-service.sh"
         echo "=== Source OK ==="
 
   # ---------------------------------------------------------------------------
-  # Step 2: Prepare SSH and VPS directories
-  # ---------------------------------------------------------------------------
-  - id: 'prepare-vps'
-    name: 'gcr.io/google.com/cloudsdktool/cloud-sdk:alpine'
-    entrypoint: 'sh'
-    args:
-      - '-c'
-      - |
-        set -eu
-        apk add --no-cache openssh-client >/dev/null
-
-        # --- Setup SSH ---
-        mkdir -p /root/.ssh
-        chmod 700 /root/.ssh
-        printenv VM_SSH_KEY | sed 's/\\n/\n/g' | tr -d '\r' > /root/.ssh/id_rsa
-        chmod 600 /root/.ssh/id_rsa
-        if ! ssh-keygen -y -f /root/.ssh/id_rsa > /dev/null; then
-          echo "ERROR: Invalid SSH key in Secret Manager."
-          exit 1
-        fi
-
-        # --- Define and Validate Deploy Paths ---
-        DEPLOY_DIR="$_DEPLOY_DIR"
-        LOG_DIR="$_LOG_DIR"
-        REPORT_DIR="$_REPORT_DIR"
-
-        # Prevent empty or dangerous system directory targets
-        case "$$DEPLOY_DIR" in
-          ""|/|/opt|/home|/root|/var|/usr|/bin|/sbin)
-            echo "ERROR: Invalid or dangerous DEPLOY_DIR: '$$DEPLOY_DIR'"
-            exit 1
-            ;;
-        esac
-
-        # --- Escape Variables for Safe Insertion ---
-        # Replaces all single quotes (') with ('\'') to guarantee safe variable assignments
-        DEPLOY_DIR_ESC=$(printf '%s' "$$DEPLOY_DIR" | sed "s/'/'\\\\''/g")
-        LOG_DIR_ESC=$(printf '%s' "$$LOG_DIR" | sed "s/'/'\\\\''/g")
-        REPORT_DIR_ESC=$(printf '%s' "$$REPORT_DIR" | sed "s/'/'\\\\''/g")
-        VM_USERNAME_ESC=$(printf '%s' "$_VM_USERNAME" | sed "s/'/'\\\\''/g")
-
-        echo "=== Creating directories on VPS ==="
-        {
-          printf '%s\n' 'set -eu'
-          printf "DEPLOY_DIR='%s'\n" "$$DEPLOY_DIR_ESC"
-          printf "LOG_DIR='%s'\n" "$$LOG_DIR_ESC"
-          printf "REPORT_DIR='%s'\n" "$$REPORT_DIR_ESC"
-          printf "VM_USERNAME='%s'\n" "$$VM_USERNAME_ESC"
-          printf '%s\n' 'sudo mkdir -p "$$DEPLOY_DIR" "$$LOG_DIR" "$$REPORT_DIR"'
-          printf '%s\n' 'sudo chown -R "$$VM_USERNAME:$$VM_USERNAME" "$$DEPLOY_DIR" "$$LOG_DIR" "$$REPORT_DIR"'
-        } | ssh -i /root/.ssh/id_rsa -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o Port="$$SSH_PORT" "$_VM_USERNAME@$_VM_HOST" 'bash -se'
-        echo "✓ VPS directories ready"
-    secretEnv: ['VM_SSH_KEY', 'SSH_PORT']
-
-  # ---------------------------------------------------------------------------
-  # Step 3: Generate env template locally and sync source to VPS
+  # Step 2: Sync source code to the VPS build directory
   # ---------------------------------------------------------------------------
   - id: 'sync-source'
     name: 'gcr.io/google.com/cloudsdktool/cloud-sdk:alpine'
@@ -93,6 +42,10 @@ steps:
         chmod 700 /root/.ssh
         printenv VM_SSH_KEY | sed 's/\\n/\n/g' | tr -d '\r' > /root/.ssh/id_rsa
         chmod 600 /root/.ssh/id_rsa
+        if ! ssh-keygen -y -f /root/.ssh/id_rsa >/dev/null; then
+          echo "ERROR: Invalid SSH key in Secret Manager."
+          exit 1
+        fi
 
         DEPLOY_DIR="$_DEPLOY_DIR"
         case "$$DEPLOY_DIR" in
@@ -102,21 +55,23 @@ steps:
             ;;
         esac
 
-        echo "=== Generating local .env template ==="
+        DEPLOY_DIR_ESC=$(printf '%s' "$$DEPLOY_DIR" | sed "s/'/'\\\\''/g")
+        VM_USERNAME_ESC=$(printf '%s' "$_VM_USERNAME" | sed "s/'/'\\\\''/g")
+
+        echo "=== Preparing VPS deploy directory ==="
         {
-          printf '%s\n' '# Playwright E2E - generated by Cloud Build (do not commit)'
-          printf '%s\n' 'CI=true'
-          printf '%s\n' 'CI_AUTH_MODE=reuse'
-          printf 'FRONTEND_URL=%s\n' "$_FRONTEND_URL"
-          printf 'BASE_URL=%s\n' "$_FRONTEND_URL"
-          printf 'ATS_URL=%s\n' "$_ATS_URL"
-          printf 'API_BASE_URL=%s\n' "$_API_URL"
-        } > .env.template
+          printf '%s\n' 'set -eu'
+          printf "DEPLOY_DIR='%s'\n" "$$DEPLOY_DIR_ESC"
+          printf "VM_USERNAME='%s'\n" "$$VM_USERNAME_ESC"
+          printf '%s\n' 'sudo mkdir -p "$$DEPLOY_DIR"'
+          printf '%s\n' 'sudo chown -R "$$VM_USERNAME:$$VM_USERNAME" "$$DEPLOY_DIR"'
+        } | ssh -i /root/.ssh/id_rsa -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o Port="$$SSH_PORT" "$_VM_USERNAME@$_VM_HOST" 'bash -se'
 
         echo "=== Syncing source code to VPS ==="
         rsync -az --delete -s \
           --exclude='.git/' \
           --exclude='.agents/' \
+          --exclude='.codex/' \
           --exclude='node_modules/' \
           --exclude='playwright-report/' \
           --exclude='nightly-logs/' \
@@ -126,14 +81,13 @@ steps:
           -e "ssh -i /root/.ssh/id_rsa -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o Port=\"$$SSH_PORT\"" \
           ./ "$_VM_USERNAME@$_VM_HOST:$$DEPLOY_DIR/"
 
-        rm -f .env.template
         echo "✓ Source synced to VPS"
     secretEnv: ['VM_SSH_KEY', 'SSH_PORT']
 
   # ---------------------------------------------------------------------------
-  # Step 4: Install Docker on VPS if needed and build the test image
+  # Step 3: Install Docker on VPS if needed and build the image
   # ---------------------------------------------------------------------------
-  - id: 'build-docker-image'
+  - id: 'build-image'
     name: 'gcr.io/google.com/cloudsdktool/cloud-sdk:alpine'
     entrypoint: 'sh'
     args:
@@ -147,8 +101,7 @@ steps:
         printenv VM_SSH_KEY | sed 's/\\n/\n/g' | tr -d '\r' > /root/.ssh/id_rsa
         chmod 600 /root/.ssh/id_rsa
 
-        DEPLOY_DIR="$_DEPLOY_DIR"
-        DEPLOY_DIR_ESC=$(printf '%s' "$$DEPLOY_DIR" | sed "s/'/'\\\\''/g")
+        DEPLOY_DIR_ESC=$(printf '%s' "$_DEPLOY_DIR" | sed "s/'/'\\\\''/g")
         DOCKER_IMAGE_ESC=$(printf '%s' "$_DOCKER_IMAGE" | sed "s/'/'\\\\''/g")
 
         echo "=== Installing Docker and building image on VPS ==="
@@ -159,11 +112,7 @@ steps:
           printf '%s\n' 'if ! command -v docker >/dev/null 2>&1; then'
           printf '%s\n' '  echo "Docker not found. Installing docker.io..."'
           printf '%s\n' '  sudo apt-get update'
-          printf '%s\n' '  sudo DEBIAN_FRONTEND=noninteractive apt-get install -y docker.io coreutils'
-          printf '%s\n' 'fi'
-          printf '%s\n' 'if ! command -v timeout >/dev/null 2>&1; then'
-          printf '%s\n' '  sudo apt-get update'
-          printf '%s\n' '  sudo DEBIAN_FRONTEND=noninteractive apt-get install -y coreutils'
+          printf '%s\n' '  sudo DEBIAN_FRONTEND=noninteractive apt-get install -y docker.io'
           printf '%s\n' 'fi'
           printf '%s\n' 'sudo systemctl enable --now docker'
           printf '%s\n' 'sudo docker version >/dev/null'
@@ -171,13 +120,14 @@ steps:
           printf '%s\n' 'sudo docker build -t "$$DOCKER_IMAGE" .'
           printf '%s\n' 'echo "✓ Docker image built: $$DOCKER_IMAGE"'
         } | ssh -i /root/.ssh/id_rsa -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o Port="$$SSH_PORT" "$_VM_USERNAME@$_VM_HOST" 'bash -se'
-        echo "✓ VPS Docker image build complete"
+
+        echo "✓ VPS image build complete"
     secretEnv: ['VM_SSH_KEY', 'SSH_PORT']
 
   # ---------------------------------------------------------------------------
-  # Step 5: Merge env template into the VPS .env file
+  # Step 4: Recreate the long-running scheduler container on the VPS
   # ---------------------------------------------------------------------------
-  - id: 'merge-env'
+  - id: 'deploy-container'
     name: 'gcr.io/google.com/cloudsdktool/cloud-sdk:alpine'
     entrypoint: 'sh'
     args:
@@ -191,179 +141,125 @@ steps:
         printenv VM_SSH_KEY | sed 's/\\n/\n/g' | tr -d '\r' > /root/.ssh/id_rsa
         chmod 600 /root/.ssh/id_rsa
 
-        DEPLOY_DIR="$_DEPLOY_DIR"
-        DEPLOY_DIR_ESC=$(printf '%s' "$$DEPLOY_DIR" | sed "s/'/'\\\\''/g")
-
-        echo "=== Writing .env on VPS ==="
-        {
-          printf '%s\n' 'set -eu'
-          printf "DEPLOY_DIR='%s'\n" "$$DEPLOY_DIR_ESC"
-          printf '%s\n' 'touch "$$DEPLOY_DIR/.env"'
-          printf '%s\n' 'if [ ! -f "$$DEPLOY_DIR/.env.template" ]; then'
-          printf '%s\n' '  echo "ERROR: $$DEPLOY_DIR/.env.template not found on VPS"'
-          printf '%s\n' '  exit 1'
-          printf '%s\n' 'fi'
-          printf '%s\n' 'while IFS= read -r line || [ -n "$$line" ]; do'
-          printf '%s\n' '  case "$$line" in'
-          printf '%s\n' "    ''|\\#*) continue ;;"
-          printf '%s\n' '  esac'
-          printf '%s\n' '  key=$${line%%=*}'
-          printf '%s\n' '  val=$${line#*=}'
-          printf '%s\n' '  if ! grep -q "^$${key}=" "$$DEPLOY_DIR/.env"; then'
-          printf '%s\n' '    printf "%s=%s\n" "$$key" "$$val" >> "$$DEPLOY_DIR/.env"'
-          printf '%s\n' '    echo "  Added missing env: $$key"'
-          printf '%s\n' '  fi'
-          printf '%s\n' 'done < "$$DEPLOY_DIR/.env.template"'
-          printf '%s\n' 'rm -f "$$DEPLOY_DIR/.env.template"'
-          printf '%s\n' 'echo "✓ .env merged and cleaned"'
-        } | ssh -i /root/.ssh/id_rsa -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o Port="$$SSH_PORT" "$_VM_USERNAME@$_VM_HOST" 'bash -se'
-    secretEnv: ['VM_SSH_KEY', 'SSH_PORT']
-
-  # ---------------------------------------------------------------------------
-  # Step 6: Write the Docker runner wrapper on VPS
-  # ---------------------------------------------------------------------------
-  - id: 'write-docker-runner'
-    name: 'gcr.io/google.com/cloudsdktool/cloud-sdk:alpine'
-    entrypoint: 'sh'
-    args:
-      - '-c'
-      - |
-        set -eu
-        apk add --no-cache openssh-client >/dev/null
-
-        mkdir -p /root/.ssh
-        chmod 700 /root/.ssh
-        printenv VM_SSH_KEY | sed 's/\\n/\n/g' | tr -d '\r' > /root/.ssh/id_rsa
-        chmod 600 /root/.ssh/id_rsa
+        if [ -z "$$PLAYWRIGHT_STORAGE_STATE" ]; then
+          echo "ERROR: PLAYWRIGHT_STORAGE_STATE secret is empty."
+          exit 1
+        fi
 
         DEPLOY_DIR_ESC=$(printf '%s' "$_DEPLOY_DIR" | sed "s/'/'\\\\''/g")
-        LOG_DIR_ESC=$(printf '%s' "$_LOG_DIR" | sed "s/'/'\\\\''/g")
-        REPORT_DIR_ESC=$(printf '%s' "$_REPORT_DIR" | sed "s/'/'\\\\''/g")
-        INSTANCE_NAME_ESC=$(printf '%s' "$_INSTANCE_NAME" | sed "s/'/'\\\\''/g")
+        CONTAINER_NAME_ESC=$(printf '%s' "$_CONTAINER_NAME" | sed "s/'/'\\\\''/g")
+        DATA_VOLUME_ESC=$(printf '%s' "$_DATA_VOLUME" | sed "s/'/'\\\\''/g")
         DOCKER_IMAGE_ESC=$(printf '%s' "$_DOCKER_IMAGE" | sed "s/'/'\\\\''/g")
-        RUN_TIMEOUT_SECONDS_ESC=$(printf '%s' "$_RUN_TIMEOUT_SECONDS" | sed "s/'/'\\\\''/g")
+        FRONTEND_URL_ESC=$(printf '%s' "$_FRONTEND_URL" | sed "s/'/'\\\\''/g")
+        ATS_URL_ESC=$(printf '%s' "$_ATS_URL" | sed "s/'/'\\\\''/g")
+        API_URL_ESC=$(printf '%s' "$_API_URL" | sed "s/'/'\\\\''/g")
+        SCHEDULE_HOUR_ESC=$(printf '%s' "$_SCHEDULE_HOUR" | sed "s/'/'\\\\''/g")
+        SCHEDULE_MINUTE_ESC=$(printf '%s' "$_SCHEDULE_MINUTE" | sed "s/'/'\\\\''/g")
+        TIMEZONE_ESC=$(printf '%s' "$_TIMEZONE" | sed "s/'/'\\\\''/g")
+        RUN_ON_STARTUP_ESC=$(printf '%s' "$_RUN_ON_STARTUP" | sed "s/'/'\\\\''/g")
+        CPU_LIMIT_ESC=$(printf '%s' "$_CPU_LIMIT" | sed "s/'/'\\\\''/g")
+        MEMORY_LIMIT_ESC=$(printf '%s' "$_MEMORY_LIMIT" | sed "s/'/'\\\\''/g")
+        SHM_SIZE_ESC=$(printf '%s' "$_SHM_SIZE" | sed "s/'/'\\\\''/g")
+        PIDS_LIMIT_ESC=$(printf '%s' "$_PIDS_LIMIT" | sed "s/'/'\\\\''/g")
+        LOG_MAX_SIZE_ESC=$(printf '%s' "$_LOG_MAX_SIZE" | sed "s/'/'\\\\''/g")
+        LOG_MAX_FILE_ESC=$(printf '%s' "$_LOG_MAX_FILE" | sed "s/'/'\\\\''/g")
+        REPORT_CONTAINER_NAME_ESC=$(printf '%s' "$_REPORT_CONTAINER_NAME" | sed "s/'/'\\\\''/g")
+        REPORT_IMAGE_ESC=$(printf '%s' "$_REPORT_IMAGE" | sed "s/'/'\\\\''/g")
+        REPORT_PORT_ESC=$(printf '%s' "$_REPORT_PORT" | sed "s/'/'\\\\''/g")
+        REPORT_CPU_LIMIT_ESC=$(printf '%s' "$_REPORT_CPU_LIMIT" | sed "s/'/'\\\\''/g")
+        REPORT_MEMORY_LIMIT_ESC=$(printf '%s' "$_REPORT_MEMORY_LIMIT" | sed "s/'/'\\\\''/g")
 
-        echo "=== Writing Docker runner on VPS ==="
+        echo "=== Recreating scheduler and report containers on VPS ==="
         {
           printf '%s\n' 'set -eu'
           printf "DEPLOY_DIR='%s'\n" "$$DEPLOY_DIR_ESC"
-          printf "LOG_DIR='%s'\n" "$$LOG_DIR_ESC"
-          printf "REPORT_DIR='%s'\n" "$$REPORT_DIR_ESC"
-          printf "INSTANCE_NAME='%s'\n" "$$INSTANCE_NAME_ESC"
+          printf "CONTAINER_NAME='%s'\n" "$$CONTAINER_NAME_ESC"
+          printf "DATA_VOLUME='%s'\n" "$$DATA_VOLUME_ESC"
           printf "DOCKER_IMAGE='%s'\n" "$$DOCKER_IMAGE_ESC"
-          printf "RUN_TIMEOUT_SECONDS='%s'\n" "$$RUN_TIMEOUT_SECONDS_ESC"
-          printf '%s\n' 'cat > "$$DEPLOY_DIR/run-in-docker.sh" <<EOF'
-          printf '%s\n' '#!/usr/bin/env bash'
-          printf '%s\n' 'set -euo pipefail'
-          printf '%s\n' ''
-          printf '%s\n' "DEPLOY_DIR='$$DEPLOY_DIR'"
-          printf '%s\n' "LOG_DIR='$$LOG_DIR'"
-          printf '%s\n' "REPORT_DIR='$$REPORT_DIR'"
-          printf '%s\n' "INSTANCE_NAME='$$INSTANCE_NAME'"
-          printf '%s\n' "DOCKER_IMAGE='$$DOCKER_IMAGE'"
-          printf '%s\n' "RUN_TIMEOUT_SECONDS='$$RUN_TIMEOUT_SECONDS'"
-          printf '%s\n' 'CONTAINER_NAME="$$INSTANCE_NAME-nightly"'
-          printf '%s\n' 'CONTAINER_LOG_DIR="/artifacts/logs"'
-          printf '%s\n' 'CONTAINER_REPORT_DIR="/artifacts/reports"'
-          printf '%s\n' ''
-          printf '%s\n' 'if [ ! -f "$$DEPLOY_DIR/storageState.json" ]; then'
-          printf '%s\n' '  echo "ERROR: $$DEPLOY_DIR/storageState.json is missing."'
-          printf '%s\n' '  echo "Upload it before running the containerized nightly job."'
-          printf '%s\n' '  exit 3'
-          printf '%s\n' 'fi'
-          printf '%s\n' ''
-          printf '%s\n' 'DOCKER=(sudo docker)'
-          printf '%s\n' 'if [ "$${EUID:-$$(id -u)}" -eq 0 ]; then'
-          printf '%s\n' '  DOCKER=(docker)'
-          printf '%s\n' 'fi'
-          printf '%s\n' ''
-          printf '%s\n' 'if "$${DOCKER[@]}" ps --format "{{.Names}}" | grep -Fx "$$CONTAINER_NAME" >/dev/null 2>&1; then'
-          printf '%s\n' '  echo "INFO: $$CONTAINER_NAME is already running. Skipping overlapping run."'
-          printf '%s\n' '  exit 4'
-          printf '%s\n' 'fi'
-          printf '%s\n' ''
-          printf '%s\n' 'RUN_CMD=('
-          printf '%s\n' '  "$${DOCKER[@]}"'
-          printf '%s\n' '  run'
-          printf '%s\n' '  --rm'
-          printf '%s\n' '  --name "$$CONTAINER_NAME"'
-          printf '%s\n' '  --env-file "$$DEPLOY_DIR/.env"'
-          printf '%s\n' '  -e E2E_LOG_DIR="$$CONTAINER_LOG_DIR"'
-          printf '%s\n' '  -e E2E_REPORT_DIR="$$CONTAINER_REPORT_DIR"'
-          printf '%s\n' '  -v "$$DEPLOY_DIR/storageState.json:/app/storageState.json:ro"'
-          printf '%s\n' '  -v "$$LOG_DIR:$$CONTAINER_LOG_DIR"'
-          printf '%s\n' '  -v "$$REPORT_DIR:$$CONTAINER_REPORT_DIR"'
+          printf "FRONTEND_URL='%s'\n" "$$FRONTEND_URL_ESC"
+          printf "ATS_URL='%s'\n" "$$ATS_URL_ESC"
+          printf "API_URL='%s'\n" "$$API_URL_ESC"
+          printf "SCHEDULE_HOUR='%s'\n" "$$SCHEDULE_HOUR_ESC"
+          printf "SCHEDULE_MINUTE='%s'\n" "$$SCHEDULE_MINUTE_ESC"
+          printf "TIMEZONE='%s'\n" "$$TIMEZONE_ESC"
+          printf "RUN_ON_STARTUP='%s'\n" "$$RUN_ON_STARTUP_ESC"
+          printf "CPU_LIMIT='%s'\n" "$$CPU_LIMIT_ESC"
+          printf "MEMORY_LIMIT='%s'\n" "$$MEMORY_LIMIT_ESC"
+          printf "SHM_SIZE='%s'\n" "$$SHM_SIZE_ESC"
+          printf "PIDS_LIMIT='%s'\n" "$$PIDS_LIMIT_ESC"
+          printf "LOG_MAX_SIZE='%s'\n" "$$LOG_MAX_SIZE_ESC"
+          printf "LOG_MAX_FILE='%s'\n" "$$LOG_MAX_FILE_ESC"
+          printf "REPORT_CONTAINER_NAME='%s'\n" "$$REPORT_CONTAINER_NAME_ESC"
+          printf "REPORT_IMAGE='%s'\n" "$$REPORT_IMAGE_ESC"
+          printf "REPORT_PORT='%s'\n" "$$REPORT_PORT_ESC"
+          printf "REPORT_CPU_LIMIT='%s'\n" "$$REPORT_CPU_LIMIT_ESC"
+          printf "REPORT_MEMORY_LIMIT='%s'\n" "$$REPORT_MEMORY_LIMIT_ESC"
+          printf '%s\n' 'sudo docker volume create "$$DATA_VOLUME" >/dev/null'
+          printf '%s\n' 'sudo docker rm -f "$$CONTAINER_NAME" >/dev/null 2>&1 || true'
+          printf '%s\n' 'sudo docker rm -f "$$REPORT_CONTAINER_NAME" >/dev/null 2>&1 || true'
+          printf '%s\n' 'sudo docker run -d --restart unless-stopped \'
+          printf '%s\n' '  --init \'
+          printf '%s\n' '  --name "$$CONTAINER_NAME" \'
+          printf '%s\n' '  --cpus "$$CPU_LIMIT" \'
+          printf '%s\n' '  --memory "$$MEMORY_LIMIT" \'
+          printf '%s\n' '  --shm-size "$$SHM_SIZE" \'
+          printf '%s\n' '  --pids-limit "$$PIDS_LIMIT" \'
+          printf '%s\n' '  --log-opt max-size="$$LOG_MAX_SIZE" \'
+          printf '%s\n' '  --log-opt max-file="$$LOG_MAX_FILE" \'
+          printf '%s\n' '  -e CI=true \'
+          printf '%s\n' '  -e CI_AUTH_MODE=reuse \'
+          printf '%s\n' '  -e FRONTEND_URL="$$FRONTEND_URL" \'
+          printf '%s\n' '  -e BASE_URL="$$FRONTEND_URL" \'
+          printf '%s\n' '  -e ATS_URL="$$ATS_URL" \'
+          printf '%s\n' '  -e API_BASE_URL="$$API_URL" \'
+          printf '%s\n' '  -e SCHEDULE_HOUR="$$SCHEDULE_HOUR" \'
+          printf '%s\n' '  -e SCHEDULE_MINUTE="$$SCHEDULE_MINUTE" \'
+          printf '%s\n' '  -e RUN_ON_STARTUP="$$RUN_ON_STARTUP" \'
+          printf '%s\n' '  -e TZ="$$TIMEZONE" \'
+          printf '%s\n' '  -v "$$DATA_VOLUME:/data" \'
           printf '%s\n' '  "$$DOCKER_IMAGE"'
-          printf '%s\n' '  bash scripts/run-nightly-tests.sh'
-          printf '%s\n' ')'
-          printf '%s\n' ''
-          printf '%s\n' 'if command -v timeout >/dev/null 2>&1; then'
-          printf '%s\n' '  set +e'
-          printf '%s\n' '  timeout --foreground "$${RUN_TIMEOUT_SECONDS}s" "$${RUN_CMD[@]}"'
-          printf '%s\n' '  STATUS=$$?'
-          printf '%s\n' '  set -e'
-          printf '%s\n' '  if [ "$$STATUS" -eq 124 ]; then'
-          printf '%s\n' '    "$${DOCKER[@]}" rm -f "$$CONTAINER_NAME" >/dev/null 2>&1 || true'
-          printf '%s\n' '  fi'
-          printf '%s\n' '  exit "$$STATUS"'
-          printf '%s\n' 'fi'
-          printf '%s\n' ''
-          printf '%s\n' 'exec "$${RUN_CMD[@]}"'
-          printf '%s\n' 'EOF'
-          printf '%s\n' 'chmod +x "$$DEPLOY_DIR/run-in-docker.sh"'
-          printf '%s\n' 'echo "✓ Docker runner ready: $$DEPLOY_DIR/run-in-docker.sh"'
+          printf '%s\n' 'sudo docker run -d --restart unless-stopped \'
+          printf '%s\n' '  --name "$$REPORT_CONTAINER_NAME" \'
+          printf '%s\n' '  --cpus "$$REPORT_CPU_LIMIT" \'
+          printf '%s\n' '  --memory "$$REPORT_MEMORY_LIMIT" \'
+          printf '%s\n' '  --read-only \'
+          printf '%s\n' '  --tmpfs /var/cache/nginx \'
+          printf '%s\n' '  --tmpfs /var/run \'
+          printf '%s\n' '  --tmpfs /tmp \'
+          printf '%s\n' '  -p "$$REPORT_PORT:8080" \'
+          printf '%s\n' '  --log-opt max-size="$$LOG_MAX_SIZE" \'
+          printf '%s\n' '  --log-opt max-file="$$LOG_MAX_FILE" \'
+          printf '%s\n' '  -v "$$DATA_VOLUME:/var/www/data:ro" \'
+          printf '%s\n' '  -v "$$DEPLOY_DIR/deploy/report-nginx.conf:/etc/nginx/conf.d/default.conf:ro" \'
+          printf '%s\n' '  "$$REPORT_IMAGE"'
         } | ssh -i /root/.ssh/id_rsa -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o Port="$$SSH_PORT" "$_VM_USERNAME@$_VM_HOST" 'bash -se'
-    secretEnv: ['VM_SSH_KEY', 'SSH_PORT']
 
-  # ---------------------------------------------------------------------------
-  # Step 7: Install the nightly cron entry on VPS
-  # ---------------------------------------------------------------------------
-  - id: 'install-cron'
-    name: 'gcr.io/google.com/cloudsdktool/cloud-sdk:alpine'
-    entrypoint: 'sh'
-    args:
-      - '-c'
-      - |
-        set -eu
-        apk add --no-cache openssh-client >/dev/null
-
-        mkdir -p /root/.ssh
-        chmod 700 /root/.ssh
-        printenv VM_SSH_KEY | sed 's/\\n/\n/g' | tr -d '\r' > /root/.ssh/id_rsa
-        chmod 600 /root/.ssh/id_rsa
-
-        DEPLOY_DIR_ESC=$(printf '%s' "$_DEPLOY_DIR" | sed "s/'/'\\\\''/g")
-        LOG_DIR_ESC=$(printf '%s' "$_LOG_DIR" | sed "s/'/'\\\\''/g")
-        INSTANCE_NAME_ESC=$(printf '%s' "$_INSTANCE_NAME" | sed "s/'/'\\\\''/g")
-        CRON_MINUTE_ESC=$(printf '%s' "$_CRON_MINUTE" | sed "s/'/'\\\\''/g")
-        CRON_HOUR_ESC=$(printf '%s' "$_CRON_HOUR" | sed "s/'/'\\\\''/g")
-
-        echo "=== Installing cron job on VPS ==="
-        {
-          printf '%s\n' 'set -eu'
-          printf "DEPLOY_DIR='%s'\n" "$$DEPLOY_DIR_ESC"
-          printf "LOG_DIR='%s'\n" "$$LOG_DIR_ESC"
-          printf "INSTANCE_NAME='%s'\n" "$$INSTANCE_NAME_ESC"
-          printf "CRON_MINUTE='%s'\n" "$$CRON_MINUTE_ESC"
-          printf "CRON_HOUR='%s'\n" "$$CRON_HOUR_ESC"
-          printf '%s\n' 'CRON_ID="CRON_ID=$$INSTANCE_NAME-nightly"'
-          printf '%s\n' 'CRON_CMD="$$CRON_MINUTE $$CRON_HOUR * * * $$CRON_ID /usr/bin/env bash $$DEPLOY_DIR/run-in-docker.sh >> $$LOG_DIR/cron-wrapper.log 2>&1"'
-          printf '%s\n' '(sudo crontab -l 2>/dev/null | grep -v "$$CRON_ID" || true; echo "$$CRON_CMD") | sudo crontab -'
-          printf '%s\n' 'echo "✓ Cron registered:"'
-          printf '%s\n' 'sudo crontab -l | grep "$$CRON_ID"'
-        } | ssh -i /root/.ssh/id_rsa -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o Port="$$SSH_PORT" "$_VM_USERNAME@$_VM_HOST" 'bash -se'
+        echo "=== Injecting storageState.json into container volume ==="
+        printf '%s' "$$PLAYWRIGHT_STORAGE_STATE" | ssh -i /root/.ssh/id_rsa -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o Port="$$SSH_PORT" "$_VM_USERNAME@$_VM_HOST" "sudo docker exec -i '$_CONTAINER_NAME' sh -c 'cat > /data/storageState.json && chmod 600 /data/storageState.json && ln -sf /data/storageState.json /app/storageState.json'"
 
         echo ""
         echo "========================================================"
-        echo "✅ E2E container deploy complete!"
+        echo "✅ E2E scheduler container deployed!"
         echo ""
-        echo "⚠️  ACTION REQUIRED: Upload storageState.json to VPS"
-        echo "   scp storageState.json $_VM_USERNAME@$_VM_HOST:$_DEPLOY_DIR/storageState.json"
+        echo "Container:"
+        echo "   $_CONTAINER_NAME"
+        echo "Report container:"
+        echo "   $_REPORT_CONTAINER_NAME"
+        echo "Docker volume:"
+        echo "   $_DATA_VOLUME"
         echo ""
-        echo "Smoke test:"
-        echo "   ssh $_VM_USERNAME@$_VM_HOST 'bash $_DEPLOY_DIR/run-in-docker.sh'"
+        echo "Inspect service logs:"
+        echo "   ssh $_VM_USERNAME@$_VM_HOST 'sudo docker logs -f $_CONTAINER_NAME'"
+        echo "Inspect report server logs:"
+        echo "   ssh $_VM_USERNAME@$_VM_HOST 'sudo docker logs -f $_REPORT_CONTAINER_NAME'"
+        echo ""
+        echo "Inspect data inside container:"
+        echo "   ssh $_VM_USERNAME@$_VM_HOST 'sudo docker exec -it $_CONTAINER_NAME bash'"
+        echo ""
+        echo "Latest report URL:"
+        echo "   http://$_VM_HOST:$_REPORT_PORT/latest/"
         echo "========================================================"
-    secretEnv: ['VM_SSH_KEY', 'SSH_PORT']
+    secretEnv: ['VM_SSH_KEY', 'SSH_PORT', 'PLAYWRIGHT_STORAGE_STATE']
 
 availableSecrets:
   secretManager:
@@ -371,24 +267,32 @@ availableSecrets:
     env: 'VM_SSH_KEY'
   - versionName: projects/$PROJECT_ID/secrets/ssh-port-dev/versions/latest
     env: 'SSH_PORT'
+  - versionName: projects/$PROJECT_ID/secrets/${_STORAGE_STATE_SECRET_NAME}/versions/latest
+    env: 'PLAYWRIGHT_STORAGE_STATE'
 
 substitutions:
   _VM_HOST: '14.225.210.119'
   _VM_USERNAME: 'alphaforce'
-  _INSTANCE_NAME: 'uc-playwright-dev'
-  _DOCKER_IMAGE: 'uc-playwright-e2e:dev'
-  _RUN_TIMEOUT_SECONDS: '7200'
-
-  # --- E2E deploy paths on VPS ---
   _DEPLOY_DIR: '/opt/uctalents/playwright-tests'
-  _LOG_DIR: '/opt/uctalents/playwright-logs'
-  _REPORT_DIR: '/opt/uctalents/playwright-reports'
-
-  # --- Cron schedule in the VPS local timezone ---
-  _CRON_HOUR: '2'
-  _CRON_MINUTE: '0'
-
-  # --- Target URLs ---
+  _DOCKER_IMAGE: 'uc-playwright-e2e:dev'
+  _CONTAINER_NAME: 'uc-playwright-dev'
+  _REPORT_CONTAINER_NAME: 'uc-playwright-dev-report'
+  _REPORT_IMAGE: 'nginx:1.27-alpine'
+  _REPORT_PORT: '18080'
+  _DATA_VOLUME: 'uc-playwright-dev-data'
+  _STORAGE_STATE_SECRET_NAME: 'playwright-storage-state-dev'
+  _SCHEDULE_HOUR: '2'
+  _SCHEDULE_MINUTE: '0'
+  _TIMEZONE: 'Asia/Ho_Chi_Minh'
+  _RUN_ON_STARTUP: 'false'
+  _CPU_LIMIT: '1.5'
+  _MEMORY_LIMIT: '2g'
+  _SHM_SIZE: '1g'
+  _PIDS_LIMIT: '512'
+  _REPORT_CPU_LIMIT: '0.25'
+  _REPORT_MEMORY_LIMIT: '128m'
+  _LOG_MAX_SIZE: '20m'
+  _LOG_MAX_FILE: '5'
   _FRONTEND_URL: 'https://uctalent.dev'
   _ATS_URL: 'https://business.uctalent.dev'
   _API_URL: 'https://api.nest.uctalent.dev'
