@@ -7,6 +7,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 
 const AUTH_MODE = (process.env.CI_AUTH_MODE || 'reuse').toLowerCase();
+const ALLOW_GUEST_FALLBACK = process.env.ALLOW_GUEST_FALLBACK !== 'false';
 
 async function openBrowser(): Promise<{ browser: Browser; context: BrowserContext; cdpMode: boolean }> {
   const cdpUrl = process.env.CHROME_CDP_URL;
@@ -109,6 +110,14 @@ async function isStorageStateValid(baseURL: string, storageStatePath: string) {
   }
 }
 
+async function writeGuestStorageState(storageStatePath: string) {
+  await fs.writeFile(
+    storageStatePath,
+    JSON.stringify({ cookies: [], origins: [] }, null, 2),
+    'utf8',
+  );
+}
+
 async function globalSetup(_config: FullConfig) {
   console.log('\n🔐 Running Global Setup - Authentication...\n');
 
@@ -125,6 +134,19 @@ async function globalSetup(_config: FullConfig) {
   }
 
   if (!refreshAuth) {
+    if (ALLOW_GUEST_FALLBACK) {
+      console.warn(
+        [
+          '⚠️  Existing auth state is missing or expired.',
+          `Expected file: ${storageStatePath}`,
+          'Falling back to guest storage state so public/login tests can still run automatically.',
+          'Authenticated/admin tests may skip until a fresh storageState.json is provided.',
+        ].join('\n'),
+      );
+      await writeGuestStorageState(storageStatePath);
+      return;
+    }
+
     throw new Error(
       [
         'Existing auth state is missing or expired.',

@@ -11,6 +11,7 @@ cd "$E2E_DIR"
 
 export CI="${CI:-true}"
 export CI_AUTH_MODE="${CI_AUTH_MODE:-reuse}"
+export ALLOW_GUEST_FALLBACK="${ALLOW_GUEST_FALLBACK:-true}"
 export FRONTEND_URL="${FRONTEND_URL:-https://uctalent.dev}"
 export BASE_URL="${BASE_URL:-$FRONTEND_URL}"
 export ATS_URL="${ATS_URL:-https://business.uctalent.dev}"
@@ -23,13 +24,7 @@ LOG_FILE="$LOG_DIR/playwright-$RUN_ID.log"
   echo "▶ FRONTEND_URL=$FRONTEND_URL"
   echo "▶ ATS_URL=$ATS_URL"
   echo "▶ CI_AUTH_MODE=$CI_AUTH_MODE"
-
-  if [ ! -f "$E2E_DIR/storageState.json" ]; then
-    echo "❌ Missing $E2E_DIR/storageState.json"
-    echo "Run: CI_AUTH_MODE=refresh npm run auth:refresh"
-    echo "Then copy storageState.json to this VPS directory."
-    exit 3
-  fi
+  echo "▶ ALLOW_GUEST_FALLBACK=$ALLOW_GUEST_FALLBACK"
 
   if [ ! -d "$E2E_DIR/node_modules" ]; then
     echo "▶ Installing npm dependencies..."
