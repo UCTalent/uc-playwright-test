@@ -21,6 +21,16 @@ steps:
           exit 1
         fi
 
+        echo "=== Debug: Checking paths on VPS ==="
+        ssh \
+          -i /root/.ssh/id_rsa \
+          -o IdentitiesOnly=yes \
+          -o StrictHostKeyChecking=no \
+          -o UserKnownHostsFile=/dev/null \
+          -o Port="$$SSH_PORT" \
+          "$_VM_USERNAME@$_VM_HOST" \
+          "ls -la /opt/ /opt/uctalents/ /opt/uctalents/playwright-tests/ /opt/uctalents-e2e/ 2>&1 || true"
+
         echo "=== Triggering E2E test run on VPS ==="
         ssh \
           -i /root/.ssh/id_rsa \
