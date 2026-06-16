@@ -165,7 +165,7 @@ steps:
         ssh -i /root/.ssh/id_rsa -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o Port="$$SSH_PORT" "$_VM_USERNAME@$_VM_HOST" "DEPLOY_DIR='$DEPLOY_DIR_ESC' LOG_DIR='$LOG_DIR_ESC' REPORT_DIR='$REPORT_DIR_ESC' CRON_MINUTE='$CRON_MINUTE_ESC' CRON_HOUR='$CRON_HOUR_ESC' bash -s" << '        EOF'
         set -e
         CRON_ID="CRON_ID=uc-playwright-e2e-nightly"
-        CRON_CMD="$CRON_MINUTE $CRON_HOUR * * * $CRON_ID E2E_DIR=$DEPLOY_DIR E2E_LOG_DIR=$LOG_DIR E2E_REPORT_DIR=$REPORT_DIR /usr/bin/env bash $DEPLOY_DIR/scripts/run-nightly-tests.sh >> $LOG_DIR/cron-wrapper.log 2>&1"
+        CRON_CMD="$CRON_MINUTE $CRON_HOUR * * * $CRON_ID ENV_PREFIX=dev E2E_DIR=$DEPLOY_DIR E2E_LOG_DIR=$LOG_DIR E2E_REPORT_DIR=$REPORT_DIR /usr/bin/env bash $DEPLOY_DIR/scripts/run-nightly-tests.sh >> $LOG_DIR/cron-wrapper.log 2>&1"
         
         (crontab -l 2>/dev/null | grep -v "$CRON_ID" || true; echo "$CRON_CMD") | crontab -
         echo '✓ Cron registered:'
@@ -180,7 +180,7 @@ steps:
         echo "   scp storageState.json $_VM_USERNAME@$_VM_HOST:$DEPLOY_DIR/storageState.json"
         echo ""
         echo "Smoke test:"
-        echo "   ssh $_VM_USERNAME@$_VM_HOST 'E2E_DIR=$DEPLOY_DIR bash $DEPLOY_DIR/scripts/run-nightly-tests.sh'"
+        echo "   ssh $_VM_USERNAME@$_VM_HOST 'ENV_PREFIX=dev E2E_DIR=$DEPLOY_DIR bash $DEPLOY_DIR/scripts/run-nightly-tests.sh'"
         echo "========================================================"
     secretEnv: ['VM_SSH_KEY', 'SSH_PORT']
 

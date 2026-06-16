@@ -2,6 +2,32 @@
 
 This repository contains the Playwright end-to-end suite for UCTalent.
 
+## Local start
+
+This repo runs against the existing dev/public URLs. It does not boot frontend, ATS, or backend locally.
+
+1. Install dependencies:
+
+```bash
+pnpm install
+```
+
+2. Create `.env` from [the template](.env.example) and confirm the required URLs and auth values are set.
+
+3. Refresh the auth state once if `storageState.json` is missing or expired:
+
+```bash
+TEST_GOOGLE_EMAIL=your-admin@example.com TEST_GOOGLE_PASSWORD='your-password' npm run auth:refresh
+```
+
+4. Run the suite:
+
+```bash
+npm run test
+```
+
+For an interactive run, use `npm run test:ui` or `npm run test:headed`.
+
 ## Which file do we run?
 
 Use these files for these jobs:
@@ -39,18 +65,17 @@ API_BASE_URL=https://api.nest.uctalent.dev
 CI_AUTH_MODE=reuse
 ```
 
-Adjust `API_BASE_URL` if your VPS backend is exposed on a different dev domain.
+Adjust `API_BASE_URL` if your dev backend is exposed on a different domain.
 
 ## One-time auth setup
 
-Refresh the Playwright session once:
+Refresh the Playwright session once when you need to create or renew `storageState.json`:
 
 ```bash
-cd playwright-tests
 TEST_GOOGLE_EMAIL=your-admin@example.com TEST_GOOGLE_PASSWORD='your-password' npm run auth:refresh
 ```
 
-This creates `storageState.json`. Nightly runs reuse that file and do not wait for manual verification.
+This creates `storageState.json`. Nightly runs and normal `reuse` runs use that file and skip manual verification.
 
 ## VPS flow
 

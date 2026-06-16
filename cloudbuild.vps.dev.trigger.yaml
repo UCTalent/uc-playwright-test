@@ -1,0 +1,60 @@
+steps:
+  # ---------------------------------------------------------------------------
+  # Step 1: SSH into VPS and run the test suite immediately (no deploy/rsync)
+  # Use this config for on-demand / manual Cloud Build triggers.
+  # ---------------------------------------------------------------------------
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk:alpine'
+    entrypoint: 'sh'
+    args:
+      - '-c'
+      - |
+        set -e
+        apk add --no-cache openssh-client
+
+        # --- Setup SSH ---
+        mkdir -p /root/.ssh
+        chmod 700 /root/.ssh
+        printenv VM_SSH_KEY | sed 's/\\n/\n/g' | tr -d '\r' > /root/.ssh/id_rsa
+        chmod 600 /root/.ssh/id_rsa
+        if ! ssh-keygen -y -f /root/.ssh/id_rsa > /dev/null; then
+          echo "ERROR: Invalid SSH key in Secret Manager."
+          exit 1
+        fi
+
+        echo "=== Triggering E2E test run on VPS ==="
+        ssh \
+          -i /root/.ssh/id_rsa \
+          -o IdentitiesOnly=yes \
+          -o StrictHostKeyChecking=no \
+          -o UserKnownHostsFile=/dev/null \
+          -o Port="$$SSH_PORT" \
+          "$_VM_USERNAME@$_VM_HOST" \
+          "ENV_PREFIX=dev E2E_DIR='$_E2E_DEPLOY_DIR' E2E_LOG_DIR='$_E2E_LOG_DIR' E2E_REPORT_DIR='$_E2E_REPORT_DIR' bash '$_E2E_DEPLOY_DIR/scripts/run-nightly-tests.sh'"
+
+        echo ""
+        echo "========================================================"
+        echo "✅ Trigger run complete!"
+        echo "   Logs  : $_E2E_LOG_DIR"
+        echo "   Report: $_E2E_REPORT_DIR"
+        echo "========================================================"
+    secretEnv: ['VM_SSH_KEY', 'SSH_PORT']
+
+availableSecrets:
+  secretManager:
+  - versionName: projects/$PROJECT_ID/secrets/dev-vm-ssh-key/versions/latest
+    env: 'VM_SSH_KEY'
+  - versionName: projects/$PROJECT_ID/secrets/ssh-port-dev/versions/latest
+    env: 'SSH_PORT'
+
+substitutions:
+  _VM_HOST: '14.225.210.119'
+  _VM_USERNAME: 'alphaforce'
+
+  # --- Must match paths set by cloudbuild.vps.dev.yaml ---
+  _E2E_DEPLOY_DIR: '/opt/uctalents/playwright-tests'
+  _E2E_LOG_DIR:    '/opt/uctalents/playwright-logs'
+  _E2E_REPORT_DIR: '/opt/uctalents/playwright-reports'
+
+options:
+  substitutionOption: ALLOW_LOOSE
+  logging: CLOUD_LOGGING_ONLY
