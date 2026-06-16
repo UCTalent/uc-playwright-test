@@ -41,28 +41,6 @@ steps:
           exit 1
         fi
 
-        # --- Define and Validate Deploy Paths ---
-        DEPLOY_DIR="$_E2E_DEPLOY_DIR"
-        LOG_DIR="$_E2E_LOG_DIR"
-        REPORT_DIR="$_E2E_REPORT_DIR"
-
-        # Prevent empty or dangerous system directory targets
-        case "$DEPLOY_DIR" in
-          ""|/|/opt|/home|/root|/var|/usr|/bin|/sbin)
-            echo "ERROR: Invalid or dangerous DEPLOY_DIR: '$DEPLOY_DIR'"
-            exit 1
-            ;;
-        esac
-
-        # --- Escape Variables for Safe Insertion ---
-        DEPLOY_DIR_ESC=$(printf '%s' "$DEPLOY_DIR" | sed "s/'/'\\\\''/g")
-        LOG_DIR_ESC=$(printf '%s' "$LOG_DIR" | sed "s/'/'\\\\''/g")
-        REPORT_DIR_ESC=$(printf '%s' "$REPORT_DIR" | sed "s/'/'\\\\''/g")
-        FE_URL_ESC=$(printf '%s' "$_E2E_FRONTEND_URL" | sed "s/'/'\\\\''/g")
-        ATS_URL_ESC=$(printf '%s' "$_E2E_ATS_URL" | sed "s/'/'\\\\''/g")
-        API_URL_ESC=$(printf '%s' "$_E2E_API_URL" | sed "s/'/'\\\\''/g")
-        VM_USERNAME_ESC=$(printf '%s' "$_VM_USERNAME" | sed "s/'/'\\\\''/g")
-
         # --- Check if local source code exists ---
         IF_DEPLOY="false"
         if [ -f "package.json" ] && [ -f "playwright.config.ts" ]; then
@@ -72,12 +50,12 @@ steps:
           echo "=== No local source code found. Skipping deploy/rsync step. ==="
         fi
 
-        if [ "$IF_DEPLOY" = "true" ]; then
+        if [ "$$IF_DEPLOY" = "true" ]; then
           echo "=== Creating directories on VPS ==="
-          ssh -i /root/.ssh/id_rsa -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o Port="$$SSH_PORT" "$_VM_USERNAME@$_VM_HOST" "DEPLOY_DIR='$DEPLOY_DIR_ESC' LOG_DIR='$LOG_DIR_ESC' REPORT_DIR='$REPORT_DIR_ESC' VM_USERNAME='$VM_USERNAME_ESC' bash -s" << '          EOF'
+          ssh -i /root/.ssh/id_rsa -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o Port="$$SSH_PORT" "$_VM_USERNAME@$_VM_HOST" "bash -s" << '          EOF'
           set -e
-          sudo mkdir -p "$DEPLOY_DIR" "$LOG_DIR" "$REPORT_DIR"
-          sudo chown -R "$VM_USERNAME:$VM_USERNAME" "$DEPLOY_DIR" "$LOG_DIR" "$REPORT_DIR"
+          sudo mkdir -p "$_E2E_DEPLOY_DIR" "$_E2E_LOG_DIR" "$_E2E_REPORT_DIR"
+          sudo chown -R "$_VM_USERNAME:$_VM_USERNAME" "$_E2E_DEPLOY_DIR" "$_E2E_LOG_DIR" "$_E2E_REPORT_DIR"
           EOF
 
           echo "=== Generating local .env template ==="
@@ -104,14 +82,14 @@ steps:
             --exclude='storageState.json' \
             --exclude='.env' \
             -e "ssh -i /root/.ssh/id_rsa -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o Port=\"$$SSH_PORT\"" \
-            ./ "$_VM_USERNAME@$_VM_HOST:$DEPLOY_DIR/"
+            ./ "$_VM_USERNAME@$_VM_HOST:$_E2E_DEPLOY_DIR/"
 
           rm -f .env.template
 
           echo "=== Installing dependencies on VPS ==="
-          ssh -i /root/.ssh/id_rsa -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o Port="$$SSH_PORT" "$_VM_USERNAME@$_VM_HOST" "DEPLOY_DIR='$DEPLOY_DIR_ESC' bash -s" << '          EOF'
+          ssh -i /root/.ssh/id_rsa -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o Port="$$SSH_PORT" "$_VM_USERNAME@$_VM_HOST" "bash -s" << '          EOF'
           set -e
-          cd "$DEPLOY_DIR"
+          cd "$_E2E_DEPLOY_DIR"
 
           # Ensure Node.js >= 18 is present and compatible
           NODE_OK=0
@@ -123,7 +101,7 @@ steps:
             fi
           fi
 
-          if [ "$NODE_OK" -eq 0 ]; then
+          if [ "$$NODE_OK" = "0" ]; then
             echo 'Node.js not found or version is < 18. Installing Node 20 LTS...'
             sudo apt-get update && sudo apt-get install -y ca-certificates curl gnupg
             sudo mkdir -p /etc/apt/keyrings
@@ -143,24 +121,24 @@ steps:
           echo '✓ Playwright Chromium install/verify complete'
 
           # Ensure runner script is executable
-          chmod +x "$DEPLOY_DIR/scripts/run-nightly-tests.sh"
+          chmod +x "$_E2E_DEPLOY_DIR/scripts/run-nightly-tests.sh"
           EOF
 
           echo "=== Writing .env on VPS ==="
-          ssh -i /root/.ssh/id_rsa -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o Port="$$SSH_PORT" "$_VM_USERNAME@$_VM_HOST" "DEPLOY_DIR='$DEPLOY_DIR_ESC' bash -s" << '          EOF'
+          ssh -i /root/.ssh/id_rsa -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o Port="$$SSH_PORT" "$_VM_USERNAME@$_VM_HOST" "bash -s" << '          EOF'
           set -e
-          touch "$DEPLOY_DIR/.env"
-          if [ -f "$DEPLOY_DIR/.env.template" ]; then
+          touch "$_E2E_DEPLOY_DIR/.env"
+          if [ -f "$_E2E_DEPLOY_DIR/.env.template" ]; then
             while IFS= read -r line || [ -n "$line" ]; do
               [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
               key=$(echo "$line" | cut -d= -f1)
               val=$(echo "$line" | cut -d= -f2-)
-              if ! grep -q "^${key}=" "$DEPLOY_DIR/.env"; then
-                echo "${key}=${val}" >> "$DEPLOY_DIR/.env"
-                echo "  Added missing env: ${key}"
+              if ! grep -q "^$${key}=" "$_E2E_DEPLOY_DIR/.env"; then
+                echo "$${key}=$${val}" >> "$_E2E_DEPLOY_DIR/.env"
+                echo "  Added missing env: $${key}"
               fi
-            done < "$DEPLOY_DIR/.env.template"
-            rm -f "$DEPLOY_DIR/.env.template"
+            done < "$_E2E_DEPLOY_DIR/.env.template"
+            rm -f "$_E2E_DEPLOY_DIR/.env.template"
             echo '✓ .env merged and cleaned'
           fi
           EOF
@@ -184,13 +162,13 @@ steps:
           -o UserKnownHostsFile=/dev/null \
           -o Port="$$SSH_PORT" \
           "$_VM_USERNAME@$_VM_HOST" \
-          "ENV_PREFIX=dev E2E_DIR='$DEPLOY_DIR' E2E_LOG_DIR='$LOG_DIR' E2E_REPORT_DIR='$REPORT_DIR' bash '$DEPLOY_DIR/scripts/run-nightly-tests.sh'"
+          "ENV_PREFIX=dev E2E_DIR='$_E2E_DEPLOY_DIR' E2E_LOG_DIR='$_E2E_LOG_DIR' E2E_REPORT_DIR='$_E2E_REPORT_DIR' bash '$_E2E_DEPLOY_DIR/scripts/run-nightly-tests.sh'"
 
         echo ""
         echo "========================================================"
         echo "✅ Trigger run complete!"
-        echo "   Logs  : $LOG_DIR"
-        echo "   Report: $REPORT_DIR"
+        echo "   Logs  : $_E2E_LOG_DIR"
+        echo "   Report: $_E2E_REPORT_DIR"
         echo "========================================================"
     secretEnv: ['VM_SSH_KEY', 'SSH_PORT']
 
