@@ -51,7 +51,7 @@ steps:
 
         # Verify VPS reachable via Tailscale on custom SSH port
         VPS_OK=0
-        for i in $$(seq 1 15); do
+        for i in $$(seq 1 60); do
           if timeout 5 bash -c "echo >/dev/tcp/$_VM_HOST/$$SSH_PORT" 2>/dev/null; then
             echo "[OK] VPS reachable at $_VM_HOST:$$SSH_PORT via Tailscale"
             VPS_OK=1; break
@@ -216,6 +216,8 @@ steps:
         echo "Smoke test:"
         echo "   ssh $_VM_USERNAME@$_VM_HOST 'E2E_DIR=$$DEPLOY_DIR bash $$DEPLOY_DIR/scripts/run-nightly-tests.sh'"
         echo "========================================================"
+
+        tailscale logout || true
 
         # Securely wipe Cloud Build workspace credentials
         shred -u /root/.ssh/id_rsa /root/.ssh/known_hosts 2>/dev/null || rm -f /root/.ssh/id_rsa /root/.ssh/known_hosts
