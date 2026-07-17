@@ -29,6 +29,7 @@ steps:
   # ---------------------------------------------------------------------------
   - name: 'ubuntu'
     id: Trigger-E2E
+    entrypoint: 'bash'
     secretEnv: ['VM_SSH_KEY', 'SSH_PORT', 'TAILSCALE_AUTHKEY', 'VPS_KNOWN_HOST']
     args:
       - '-c'

@@ -59,6 +59,16 @@ for yaml in cloudbuild.vps.dev.yaml cloudbuild.vps.dev.trigger.yaml; do
   forbid_grep "$yaml" 'StrictHostKeyChecking=no' "$yaml must not disable host key checks"
 done
 
+# --- Ubuntu steps must set entrypoint: bash (args start with -c; without entrypoint GCB execs '-c') ---
+for yaml in cloudbuild.vps.dev.yaml cloudbuild.vps.dev.trigger.yaml; do
+  # Text-level: entrypoint near ubuntu step (defense in depth with PyYAML below)
+  if grep -A6 "name: 'ubuntu'" "$yaml" | grep -q "entrypoint: 'bash'"; then
+    pass "$yaml ubuntu step declares entrypoint: bash"
+  else
+    fail "$yaml ubuntu step missing entrypoint: bash (args would exec '-c' as binary)"
+  fi
+done
+
 # --- Deploy YAML: modular script wiring (from fix) ---
 require_grep "cloudbuild.vps.dev.yaml" 'setup-vps-deps\.sh' "deploy calls setup-vps-deps.sh"
 require_grep "cloudbuild.vps.dev.yaml" 'merge-env\.sh' "deploy calls merge-env.sh"
@@ -174,9 +184,22 @@ for p in ['cloudbuild.vps.dev.yaml','cloudbuild.vps.dev.trigger.yaml']:
     for req in ('VM_SSH_KEY','SSH_PORT','TAILSCALE_AUTHKEY','VPS_KNOWN_HOST'):
         assert req in secrets, f'{p} missing secret {req}'
     assert d['substitutions']['_VM_HOST'] == '100.85.11.97', p
-print('YAML structure assertions OK')
+    ubuntu_steps = [s for s in d['steps'] if s.get('name') == 'ubuntu']
+    assert ubuntu_steps, f'{p} has no ubuntu step'
+    for s in ubuntu_steps:
+        ep = s.get('entrypoint')
+        args = s.get('args') or []
+        arg0 = args[0] if args else None
+        assert ep == 'bash', (
+            f\"{p} step id={s.get('id')!r}: entrypoint must be 'bash', got {ep!r} \"
+            f\"(without it GCB runs args[0]={arg0!r} as the binary)\"
+        )
+        assert args and args[0] == '-c', (
+            f\"{p} step id={s.get('id')!r}: args must start with '-c', got {args[:1]!r}\"
+        )
+print('YAML structure assertions OK (incl. ubuntu entrypoint:bash)')
 "
-  pass "PyYAML structure assertions"
+  pass "PyYAML structure assertions (secrets + ubuntu entrypoint)"
 else
   pass "PyYAML not installed — skipped parse assertions"
 fi

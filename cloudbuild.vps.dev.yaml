@@ -26,6 +26,7 @@ steps:
   # Step 2: Connect via Tailscale, rsync source, invoke modular VPS scripts
   - name: 'ubuntu'
     id: Deploy-E2E
+    entrypoint: 'bash'
     secretEnv: ['VM_SSH_KEY', 'SSH_PORT', 'TAILSCALE_AUTHKEY', 'VPS_KNOWN_HOST']
     args:
       - '-c'
