@@ -1,0 +1,202 @@
+steps:
+  # ---------------------------------------------------------------------------
+  # Step 1: Validate required files exist in source before deploying (if source is present)
+  # ---------------------------------------------------------------------------
+  - name: 'bash'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        if [ -f "package.json" ]; then
+          echo "=== Pre-flight: Validating source ==="
+          [ -f "package-lock.json" ]    || { echo "ERROR: package-lock.json is missing!"; exit 1; }
+          echo "✓ package-lock.json"
+          [ -f "playwright.config.ts" ] || { echo "ERROR: playwright.config.ts is missing!"; exit 1; }
+          echo "✓ playwright.config.ts"
+          [ -f "scripts/run-nightly-tests.sh" ] || { echo "ERROR: scripts/run-nightly-tests.sh is missing!"; exit 1; }
+          echo "✓ run-nightly-tests.sh"
+          [ -f "scripts/setup-vps-deps.sh" ] || { echo "ERROR: scripts/setup-vps-deps.sh is missing!"; exit 1; }
+          echo "✓ setup-vps-deps.sh"
+          [ -f "scripts/merge-env.sh" ] || { echo "ERROR: scripts/merge-env.sh is missing!"; exit 1; }
+          echo "✓ merge-env.sh"
+          echo "=== Source OK ==="
+        else
+          echo "=== Running without source (--no-source flag active or empty workspace) ==="
+        fi
+
+  # ---------------------------------------------------------------------------
+  # Step 2: Connect via Tailscale; optionally deploy source; trigger E2E via nohup
+  # ---------------------------------------------------------------------------
+  - name: 'ubuntu'
+    id: Trigger-E2E
+    entrypoint: 'bash'
+    secretEnv: ['VM_SSH_KEY', 'SSH_PORT', 'TAILSCALE_AUTHKEY', 'VPS_KNOWN_HOST']
+    args:
+      - '-c'
+      - |
+        set -e
+        apt-get update -qq && apt-get install -y -qq openssh-client rsync curl
+
+        # --- Connect via Tailscale ---
+        curl -fsSL https://tailscale.com/install.sh | sh
+        tailscaled --state=mem: &
+        sleep 3
+        tailscale up \
+          --authkey="$$TAILSCALE_AUTHKEY" \
+          --accept-routes \
+          --hostname="cloudbuild-playwright-trigger-$$(date +%s)" \
+          --timeout=30s
+
+        # Verify Tailscale IP
+        TS_OK=0
+        for i in $$(seq 1 120); do
+          TS_IP=$$(tailscale ip -4 2>/dev/null || true)
+          if [ -n "$$TS_IP" ]; then
+            echo "[OK] Tailscale connected: $$TS_IP"
+            TS_OK=1; break
+          fi
+          sleep 1
+        done
+        [ "$$TS_OK" -eq 1 ] || { echo "[ERROR] Tailscale failed to get IP"; exit 1; }
+
+        # Verify VPS reachable via Tailscale on custom SSH port
+        VPS_OK=0
+        for i in $$(seq 1 60); do
+          if timeout 5 bash -c "echo >/dev/tcp/$_VM_HOST/$$SSH_PORT" 2>/dev/null; then
+            echo "[OK] VPS reachable at $_VM_HOST:$$SSH_PORT via Tailscale"
+            VPS_OK=1; break
+          fi
+          echo "[WAIT] Waiting for VPS ($$i/60)..."
+          sleep 2
+        done
+        [ "$$VPS_OK" -eq 1 ] || { echo "[ERROR] Cannot reach VPS via Tailscale"; exit 1; }
+
+        # --- Setup SSH ---
+        mkdir -p /root/.ssh
+        chmod 700 /root/.ssh
+        printenv VM_SSH_KEY | sed 's/\\n/\n/g' | tr -d '\r' > /root/.ssh/id_rsa
+        chmod 600 /root/.ssh/id_rsa
+        if ! ssh-keygen -y -f /root/.ssh/id_rsa > /dev/null; then
+          echo "ERROR: Invalid SSH key in Secret Manager."
+          exit 1
+        fi
+
+        # Setup known_hosts (strict host key checking)
+        printf '%s\n' "$$VPS_KNOWN_HOST" > /root/.ssh/known_hosts
+        chmod 600 /root/.ssh/known_hosts
+
+        SSH_OPTS="-i /root/.ssh/id_rsa -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/root/.ssh/known_hosts -o Port=$$SSH_PORT"
+
+        DEPLOY_DIR="$_E2E_DEPLOY_DIR"
+        LOG_DIR="$_E2E_LOG_DIR"
+        REPORT_DIR="$_E2E_REPORT_DIR"
+
+        case "$$DEPLOY_DIR" in
+          ""|/|/opt|/home|/root|/var|/usr|/bin|/sbin)
+            echo "ERROR: Invalid or dangerous DEPLOY_DIR: '$$DEPLOY_DIR'"
+            exit 1
+            ;;
+        esac
+
+        # --- Check if local source code exists ---
+        IF_DEPLOY="false"
+        if [ -f "package.json" ] && [ -f "playwright.config.ts" ]; then
+          IF_DEPLOY="true"
+          echo "=== Local source code found. Deploying before run... ==="
+        else
+          echo "=== No local source code found. Skipping deploy/rsync step. ==="
+        fi
+
+        if [ "$$IF_DEPLOY" = "true" ]; then
+          echo "=== Creating directories on VPS ==="
+          ssh $$SSH_OPTS "$_VM_USERNAME@$_VM_HOST" \
+            "sudo mkdir -p '$$DEPLOY_DIR' '$$LOG_DIR' '$$REPORT_DIR' && sudo chown -R '$_VM_USERNAME:$_VM_USERNAME' '$$DEPLOY_DIR' '$$LOG_DIR' '$$REPORT_DIR'"
+
+          echo "=== Ensuring rsync is installed on VPS ==="
+          ssh $$SSH_OPTS "$_VM_USERNAME@$_VM_HOST" \
+            "which rsync >/dev/null 2>&1 || { sudo apt-get update && sudo apt-get install -y rsync; }"
+
+          echo "=== Generating local .env template ==="
+          printf "%s\n" \
+            "# Playwright E2E — generated by Cloud Build (do not commit)" \
+            "CI=true" \
+            "CI_AUTH_MODE=reuse" \
+            "FRONTEND_URL=$_E2E_FRONTEND_URL" \
+            "BASE_URL=$_E2E_FRONTEND_URL" \
+            "ATS_URL=$_E2E_ATS_URL" \
+            "API_BASE_URL=$_E2E_API_URL" \
+            "E2E_LOG_DIR=$_E2E_LOG_DIR" \
+            "E2E_REPORT_DIR=$_E2E_REPORT_DIR" > .env.template
+
+          echo "=== Syncing source code to VPS ==="
+          rsync -az --delete -s \
+            --exclude='.git/' \
+            --exclude='.agents/' \
+            --exclude='node_modules/' \
+            --exclude='playwright-report/' \
+            --exclude='nightly-logs/' \
+            --exclude='nightly-reports/' \
+            --exclude='storageState.json' \
+            --exclude='.env' \
+            -e "ssh -i /root/.ssh/id_rsa -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/root/.ssh/known_hosts -o Port=\"$$SSH_PORT\"" \
+            ./ "$_VM_USERNAME@$_VM_HOST:$$DEPLOY_DIR/"
+
+          rm -f .env.template
+
+          echo "=== Installing dependencies on VPS ==="
+          ssh $$SSH_OPTS "$_VM_USERNAME@$_VM_HOST" \
+            "bash '$$DEPLOY_DIR/scripts/setup-vps-deps.sh' '$$DEPLOY_DIR'"
+
+          echo "=== Writing .env on VPS ==="
+          ssh $$SSH_OPTS "$_VM_USERNAME@$_VM_HOST" \
+            "bash '$$DEPLOY_DIR/scripts/merge-env.sh' '$$DEPLOY_DIR'"
+        fi
+
+        echo "=== Debug: Checking paths on VPS ==="
+        ssh $$SSH_OPTS "$_VM_USERNAME@$_VM_HOST" \
+          "ls -la /opt/ /opt/uctalents/ /opt/uctalents/playwright-tests/ /opt/uctalents-e2e/ 2>&1 || true"
+
+        echo "=== Triggering E2E test run on VPS in background ==="
+        ssh $$SSH_OPTS "$_VM_USERNAME@$_VM_HOST" \
+          "nohup env ENV_PREFIX=dev E2E_DIR='$$DEPLOY_DIR' E2E_LOG_DIR='$$LOG_DIR' E2E_REPORT_DIR='$$REPORT_DIR' bash '$$DEPLOY_DIR/scripts/run-nightly-tests.sh' >/dev/null 2>&1 &"
+
+        echo ""
+        echo "========================================================"
+        echo "[OK] Trigger run complete!"
+        echo "   Logs  : $$LOG_DIR"
+        echo "   Report: $$REPORT_DIR"
+        echo "========================================================"
+
+        tailscale logout || true
+
+        # Securely wipe Cloud Build workspace credentials
+        shred -u /root/.ssh/id_rsa /root/.ssh/known_hosts 2>/dev/null || rm -f /root/.ssh/id_rsa /root/.ssh/known_hosts
+
+availableSecrets:
+  secretManager:
+  - versionName: projects/$PROJECT_ID/secrets/dev-vm-ssh-key/versions/latest
+    env: 'VM_SSH_KEY'
+  - versionName: projects/$PROJECT_ID/secrets/ssh-port-dev/versions/latest
+    env: 'SSH_PORT'
+  - versionName: projects/$PROJECT_ID/secrets/TAILSCALE_AUTH_KEY_DEV/versions/latest
+    env: 'TAILSCALE_AUTHKEY'
+  - versionName: projects/$PROJECT_ID/secrets/vps-dev-known-host/versions/latest
+    env: 'VPS_KNOWN_HOST'
+
+substitutions:
+  _VM_HOST: '100.85.11.97'
+  _VM_USERNAME: 'alphaforce'
+
+  # --- E2E deploy paths on VPS ---
+  _E2E_DEPLOY_DIR: '/opt/uctalents/playwright-tests'
+  _E2E_LOG_DIR:    '/opt/uctalents/playwright-logs'
+  _E2E_REPORT_DIR: '/opt/uctalents/playwright-reports'
+
+  # --- Target URLs (used for .env generation) ---
+  _E2E_FRONTEND_URL: 'https://uctalent.dev'
+  _E2E_ATS_URL: 'https://business.uctalent.dev'
+  _E2E_API_URL: 'https://api.nest.uctalent.dev'
+
+options:
+  substitutionOption: ALLOW_LOOSE
+  logging: CLOUD_LOGGING_ONLY

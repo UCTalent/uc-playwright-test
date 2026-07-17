@@ -16,11 +16,11 @@ Tests reuse `storageState.json` by default.
 
 - `CI_AUTH_MODE=reuse`: uses the saved session and never waits for manual verification
 - `CI_AUTH_MODE=refresh`: opens a headed browser and refreshes the saved session
+- `ALLOW_GUEST_FALLBACK=true`: creates an empty guest state when `storageState.json` is missing or expired, which keeps public tests moving but can hide auth regressions
 
 Refresh the session manually when needed:
 
 ```bash
-cd playwright-tests
 TEST_GOOGLE_EMAIL=your-admin@example.com TEST_GOOGLE_PASSWORD='your-password' npm run auth:refresh
 ```
 
